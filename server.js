@@ -16,6 +16,9 @@ app.use(bodyParser.json());
 
 // Routes
 app.use("/api/auth", authRoutes);
+app.get("/api/test", (req, res) => {
+    res.status(200).json({ message: "Server is running!" });
+});
 
 // Check database connection before starting the server
 pool.connect()

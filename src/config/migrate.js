@@ -2,7 +2,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import { Pool } from "pg";
+import pkg from "pg";
+const { Pool } = pkg;
 
 const pool = new Pool({
     connectionString: "postgresql://postgres.fqnircnejqcuhvbbzrqk:123456jkJK@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true",

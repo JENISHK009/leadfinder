@@ -69,3 +69,58 @@ export async function verifyOtp(req, res) {
         return errorResponse(res, 'Error during OTP verification', 500);
     }
 }
+
+export async function forgotPassword(req, res) {
+    const { email } = req.body;
+
+    console.log("email",email)
+    if (!email) {
+        return errorResponse(res, 'Email is required');
+    }
+    try {
+        const user = await pool.query('SELECT * FROM public.users WHERE email = $1', [email]);
+        if (user.rows.length === 0) {
+            return errorResponse(res, 'User not found');
+        }
+        
+        const otp = Math.floor(100000 + Math.random() * 900000).toString(); // Generate 6-digit OTP
+        await pool.query('UPDATE public.users SET otp = $1 WHERE email = $2', [otp, email]);
+        await sendOtpEmail(email, otp);
+        
+        return successResponse(res, { message: 'OTP sent to registered email' });
+    } catch (error) {
+        console.error(error);
+        return errorResponse(res, 'Error sending OTP', 500);
+    }
+}
+
+// Step 2: Verify OTP and Reset Password
+export async function resetPassword(req, res) {
+    const { email, otp, newPassword } = req.body;
+    if (!email || !otp || !newPassword) {
+        return errorResponse(res, 'Email, OTP, and new password are required');
+    }
+    try {
+        const user = await pool.query('SELECT * FROM public.users WHERE email = $1', [email]);
+        if (user.rows.length === 0) {
+            return errorResponse(res, 'User not found');
+        }
+        
+        if (user.rows[0].otp !== otp) {
+            return errorResponse(res, 'Invalid OTP');
+        }
+        
+        const isSamePassword = await bcrypt.compare(newPassword, user.rows[0].password);
+        if (isSamePassword) {
+            return errorResponse(res, 'New password cannot be the same as the old password');
+        }
+        
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await pool.query('UPDATE public.users SET password = $1, otp = NULL WHERE email = $2', [hashedPassword, email]);
+        
+        return successResponse(res, { message: 'Password reset successfully' });
+    } catch (error) {
+        console.error(error);
+        return errorResponse(res, 'Error resetting password', 500);
+    }
+}

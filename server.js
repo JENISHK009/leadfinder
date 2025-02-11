@@ -2,9 +2,9 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
-import authRoutes from "./src/routes/authRoutes.js";
 import pool from "./src/config/db.js"; // Import DB connection
 import { encryptionMiddleware } from "./src/middleware/encryptionMiddleware.js"; // Import middleware
+import { authRoutes,leadsRoutes } from "./src/routes/index.js";
 
 dotenv.config();
 
@@ -16,6 +16,8 @@ app.use(bodyParser.json());
 app.use(encryptionMiddleware); // Apply encryption middleware globally
 
 app.use("/api/auth", authRoutes);
+app.use("/api/leads", leadsRoutes);
+
 app.get("/api/test", (req, res) => {
     res.json({ message: "Server is running!" });
 });

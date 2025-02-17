@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(100) UNIQUE NOT NULL,
     mobile_number VARCHAR(20) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
+    credits INT DEFAULT 0, 
     role_id INT NOT NULL DEFAULT 2,  -- Default role_id for 'user' (ensure 'user' role has id=2)
     otp VARCHAR(6),  -- OTP column added
     otp_verified BOOLEAN DEFAULT FALSE,

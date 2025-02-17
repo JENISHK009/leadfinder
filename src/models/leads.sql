@@ -42,11 +42,18 @@ CREATE TABLE IF NOT EXISTS leads (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create Indexes for Performance
-CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
-CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads(phone);
-CREATE INDEX IF NOT EXISTS idx_leads_category ON leads(category);
-CREATE INDEX IF NOT EXISTS idx_leads_organization ON leads(organization);
+
+CREATE INDEX idx_first_name ON leads (first_name);
+CREATE INDEX idx_last_name ON leads (last_name);
+CREATE INDEX idx_email ON leads (email);
+CREATE INDEX idx_company ON leads (company);
+CREATE INDEX idx_industry ON leads (industry);
+CREATE INDEX idx_country ON leads (country);
+CREATE INDEX idx_state ON leads (state);
+CREATE INDEX idx_city ON leads (city);
+CREATE INDEX idx_seniority ON leads (seniority);
+CREATE INDEX idx_departments ON leads (departments);
+CREATE INDEX idx_num_employees ON leads (num_employees);
 
 -- Drop existing trigger if it exists
 DROP TRIGGER IF EXISTS update_leads_timestamp ON leads;

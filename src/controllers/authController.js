@@ -1,37 +1,53 @@
 import bcrypt from 'bcrypt';
 import pool from '../config/db.js';
-import { sendOtpEmail } from '../utils/emailUtils.js';
-import { generateToken } from '../utils/jwtUtils.js';
-import { successResponse, errorResponse } from '../utils/responseUtil.js';
+import { sendOtpEmail, errorResponse, generateToken, successResponse } from '../utils/index.js';
 
 const OTP = '123456';
+const USER_ROLE_NAME = 'user';
 
 export async function signup(req, res) {
     const { name, email, mobileNumber, password } = req.body;
     if (!name || !email || !mobileNumber || !password) {
         return errorResponse(res, 'All fields are required');
     }
+
+    const client = await pool.connect();
     try {
-        const existingUser = await pool.query(
-            'SELECT * FROM public.users WHERE email = $1 OR mobile_number = $2',
+        await client.query('BEGIN');
+
+        const existingUser = await client.query(
+            'SELECT id FROM public.users WHERE email = $1 OR mobile_number = $2 LIMIT 1',
             [email, mobileNumber]
         );
         if (existingUser.rows.length > 0) {
+            await client.query('ROLLBACK');
             return errorResponse(res, 'Email or Mobile Number already in use');
         }
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const roleResult = await pool.query("SELECT id FROM roles WHERE name = 'user' LIMIT 1");
+
+        const roleResult = await client.query("SELECT id FROM roles WHERE name = $1 LIMIT 1", [USER_ROLE_NAME]);
         const roleId = roleResult.rows[0]?.id;
-        const newUser = await pool.query(
-            'INSERT INTO public.users (name, email, mobile_number, password, role_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, role_id',
-            [name, email, mobileNumber, hashedPassword, roleId]
+        if (!roleId) {
+            await client.query('ROLLBACK');
+            return errorResponse(res, 'Role not found', 500);
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const newUser = await client.query(
+            'INSERT INTO public.users (name, email, mobile_number, password, role_id, credits) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, role_id, credits',
+            [name, email, mobileNumber, hashedPassword, roleId, 0]
         );
+
         await sendOtpEmail(email, OTP);
         const token = generateToken(newUser.rows[0]);
+
+        await client.query('COMMIT');
         return successResponse(res, { message: 'Signup successful, OTP sent', token, user: newUser.rows[0] });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error(error);
         return errorResponse(res, 'Error during signup', 500);
+    } finally {
+        client.release();
     }
 }
 
@@ -40,11 +56,13 @@ export async function login(req, res) {
     if (!email || !password) {
         return errorResponse(res, 'Email and password are required');
     }
+
     try {
-        const user = await pool.query('SELECT * FROM public.users WHERE email = $1', [email]);
+        const user = await pool.query('SELECT id, email, password, role_id, credits FROM public.users WHERE email = $1', [email]);
         if (user.rows.length === 0 || !(await bcrypt.compare(password, user.rows[0].password))) {
             return errorResponse(res, 'Invalid credentials');
         }
+
         const token = generateToken(user.rows[0]);
         return successResponse(res, { message: 'Login successful', token, user: user.rows[0] });
     } catch (error) {
@@ -58,9 +76,11 @@ export async function verifyOtp(req, res) {
     if (!email || !otp) {
         return errorResponse(res, 'Email and OTP are required');
     }
+
     if (otp !== OTP) {
         return errorResponse(res, 'Invalid OTP');
     }
+
     try {
         await pool.query('UPDATE public.users SET otp_verified = true WHERE email = $1', [email]);
         return successResponse(res, { message: 'OTP verified successfully' });
@@ -72,21 +92,20 @@ export async function verifyOtp(req, res) {
 
 export async function forgotPassword(req, res) {
     const { email } = req.body;
-
-    console.log("email",email)
     if (!email) {
         return errorResponse(res, 'Email is required');
     }
+
     try {
-        const user = await pool.query('SELECT * FROM public.users WHERE email = $1', [email]);
+        const user = await pool.query('SELECT id FROM public.users WHERE email = $1', [email]);
         if (user.rows.length === 0) {
             return errorResponse(res, 'User not found');
         }
-        
-        const otp = Math.floor(100000 + Math.random() * 900000).toString(); // Generate 6-digit OTP
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
         await pool.query('UPDATE public.users SET otp = $1 WHERE email = $2', [otp, email]);
         await sendOtpEmail(email, otp);
-        
+
         return successResponse(res, { message: 'OTP sent to registered email' });
     } catch (error) {
         console.error(error);
@@ -94,33 +113,43 @@ export async function forgotPassword(req, res) {
     }
 }
 
-// Step 2: Verify OTP and Reset Password
 export async function resetPassword(req, res) {
     const { email, otp, newPassword } = req.body;
     if (!email || !otp || !newPassword) {
         return errorResponse(res, 'Email, OTP, and new password are required');
     }
+
+    const client = await pool.connect();
     try {
-        const user = await pool.query('SELECT * FROM public.users WHERE email = $1', [email]);
+        await client.query('BEGIN');
+
+        const user = await client.query('SELECT id, password, otp FROM public.users WHERE email = $1 FOR UPDATE', [email]);
         if (user.rows.length === 0) {
+            await client.query('ROLLBACK');
             return errorResponse(res, 'User not found');
         }
-        
+
         if (user.rows[0].otp !== otp) {
+            await client.query('ROLLBACK');
             return errorResponse(res, 'Invalid OTP');
         }
-        
+
         const isSamePassword = await bcrypt.compare(newPassword, user.rows[0].password);
         if (isSamePassword) {
+            await client.query('ROLLBACK');
             return errorResponse(res, 'New password cannot be the same as the old password');
         }
-        
+
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await pool.query('UPDATE public.users SET password = $1, otp = NULL WHERE email = $2', [hashedPassword, email]);
-        
+        await client.query('UPDATE public.users SET password = $1, otp = NULL WHERE email = $2', [hashedPassword, email]);
+
+        await client.query('COMMIT');
         return successResponse(res, { message: 'Password reset successfully' });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error(error);
         return errorResponse(res, 'Error resetting password', 500);
+    } finally {
+        client.release();
     }
 }

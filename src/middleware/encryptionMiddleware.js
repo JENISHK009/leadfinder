@@ -32,7 +32,6 @@ export const encryptionMiddleware = (req, res, next) => {
 
         const originalJson = res.json;
         res.json = (data) => {
-            // Log the original response data
             console.log("Original Response Data:", JSON.stringify(data, null, 2));
 
             const success = res.statusCode >= 200 && res.statusCode < 300;

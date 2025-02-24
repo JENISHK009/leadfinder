@@ -1,17 +1,24 @@
-
-import express from 'express';
-import multer from 'multer';
-import { leadsController } from '../controllers/index.js'
-const upload = multer({ dest: 'uploads/' });
+import express from "express";
+import multer from "multer";
+import { leadsController } from "../controllers/index.js";
+const upload = multer({ dest: "uploads/" });
 
 const router = express.Router();
 
-router.post('/insertLeads', upload.single('file'), leadsController.addPeopleLeadsData);
-router.post('/getLeads', leadsController.getLeads);
-router.post('/exportLeadsToCSV', leadsController.exportLeadsToCSV);
-router.post('/deductCreditsFromUser', leadsController.deductCreditsFromUser);
-
-
-
+router.post(
+  "/addPeopleLeadsData",
+  upload.single("file"),
+  leadsController.addPeopleLeadsData
+);
+router.post("/getPeopleLeads", leadsController.getPeopleLeads);
+router.post("/exportPeopleLeadsToCSV", leadsController.exportPeopleLeadsToCSV);
+router.post("/deductCreditsFromUser", leadsController.deductCreditsFromUser);
+router.post(
+  "/addCompaniesData",
+  upload.single("file"),
+  leadsController.addCompaniesData
+);
+router.post("/getCompanies", leadsController.getCompanies);
+router.post("/exportCompaniesToCSV", leadsController.exportCompaniesToCSV);
 
 export default router;

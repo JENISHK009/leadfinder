@@ -1030,6 +1030,7 @@ const exportCompaniesToCSV = async (req, res) => {
       includeTechnology,
       includeCompanyKeyword,
       search,
+      limit = 1000, // Default limit is 1000
     } = req.body;
 
     const userId = req.currentUser.id;
@@ -1180,6 +1181,11 @@ const exportCompaniesToCSV = async (req, res) => {
     // Handle company keyword filter
     addStringFilter("company_name", includeCompanyKeyword);
 
+    // Add LIMIT to the query
+    baseQuery += ` LIMIT $${index}`;
+    values.push(limit);
+    index++;
+
     console.log("baseQuery>", baseQuery);
     console.log("values>", values);
 
@@ -1225,15 +1231,28 @@ const exportCompaniesToCSV = async (req, res) => {
 
     const csvData = csvHeader + csvRows;
 
-    // Send CSV via email
-    await sendCSVEmail(userEmail, csvData);
+    if (rows.length > 1000) {
+      // If limit is greater than 1000, send the CSV via email
+      await sendCSVEmail(userEmail, csvData);
 
-    await client.query("COMMIT");
+      await client.query("COMMIT");
 
-    return res.status(200).json({
-      message: `CSV file has been sent to your email. ${creditsToDeduct} credit(s) deducted.`,
-      remaining_credits: deductionResult.remainingCredits,
-    });
+      return res.status(200).json({
+        message: `CSV file has been sent to your email. ${creditsToDeduct} credit(s) deducted.`,
+        remaining_credits: deductionResult.remainingCredits,
+      });
+    } else {
+      // If limit is 1000 or less, send the CSV as a downloadable response
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="companies_export.csv"`
+      );
+
+      await client.query("COMMIT");
+
+      return res.send(csvData);
+    }
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error exporting company data:", error);

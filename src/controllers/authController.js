@@ -58,13 +58,29 @@ export async function login(req, res) {
     }
 
     try {
-        const user = await pool.query('SELECT id, email, password, role_id, credits FROM public.users WHERE email = $1', [email]);
+        // Join the users table with the roles table to get the role name
+        const user = await pool.query(`
+            SELECT u.id, u.email, u.password, u.role_id, u.credits, r.name as role_name 
+            FROM public.users u
+            JOIN public.roles r ON u.role_id = r.id
+            WHERE u.email = $1
+        `, [email]);
+
         if (user.rows.length === 0 || !(await bcrypt.compare(password, user.rows[0].password))) {
             return errorResponse(res, 'Invalid credentials');
         }
 
-        const token = generateToken(user.rows[0]);
-        return successResponse(res, { message: 'Login successful', token, user: user.rows[0] });
+        // Extract user details including the role
+        const userDetails = {
+            id: user.rows[0].id,
+            email: user.rows[0].email,
+            role_id: user.rows[0].role_id,
+            credits: user.rows[0].credits,
+            role: user.rows[0].role_name // Include the role name
+        };
+
+        const token = generateToken(userDetails);
+        return successResponse(res, { message: 'Login successful', token, user: userDetails });
     } catch (error) {
         console.error(error);
         return errorResponse(res, 'Error during login', 500);

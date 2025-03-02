@@ -155,7 +155,7 @@ const addPeopleLeadsData = (req, res) => {
       } catch (error) {
         fs.unlinkSync(filePath);
         console.error("Error processing data:", error);
-        return errorResponse(res, "Error processing data", 500);
+        return errorResponse(res, error.message, 500);
       }
     });
 };

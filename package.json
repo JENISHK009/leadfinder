@@ -23,7 +23,9 @@
     "nodemailer": "^6.10.0",
     "pg": "^8.13.1",
     "pg-copy-streams": "^6.0.6",
-    "pg-format": "^1.0.4"
+    "pg-format": "^1.0.4",
+    "strip": "^3.0.0",
+    "stripe": "^17.7.0"
   },
   "engines": {
     "node": ">=20.0.0"

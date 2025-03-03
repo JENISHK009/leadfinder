@@ -169,3 +169,47 @@ export async function getUserSubscriptionHistory(req, res) {
         client.release();
     }
 }
+
+
+export async function getUserPoints(req, res) {
+    const userId = req.currentUser.id;
+
+    if (!userId) {
+        return errorResponse(res, 'User ID is required', 400);
+    }
+
+    const client = await pool.connect();
+
+    try {
+        console.log(`Fetching points for user ID: ${userId}`);
+
+        // Query to fetch the user's credits (points)
+        const query = `
+            SELECT 
+                credits AS points
+            FROM 
+                public.users
+            WHERE 
+                id = $1
+        `;
+
+        const result = await client.query(query, [userId]);
+
+        if (result.rows.length === 0) {
+            return errorResponse(res, 'User not found', 404);
+        }
+
+        const userPoints = result.rows[0];
+
+        console.log(`Retrieved points for user ID: ${userId}`);
+
+        return successResponse(res, {
+                points: userPoints.points
+        });
+    } catch (error) {
+        console.error(`Error fetching points for user ID ${userId}:`, error);
+        return errorResponse(res, 'Error fetching user points', 500);
+    } finally {
+        client.release();
+    }
+}

@@ -8,5 +8,6 @@ router.get(
   "/getUserSubscriptionHistory",
   userController.getUserSubscriptionHistory
 );
+router.get("/getUserPoints", userController.getUserPoints);
 
 export default router;

@@ -12,6 +12,7 @@ import {
   leadsRoutes,
   plansRoutes,
   webhookRoutes,
+  userRoutes,
 } from "./src/routes/index.js";
 
 dotenv.config();
@@ -23,7 +24,11 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 
 // Apply express.raw() middleware ONLY for the webhook route
-app.use("/api/webhook", express.raw({ type: "application/json" }), webhookRoutes);
+app.use(
+  "/api/webhook",
+  express.raw({ type: "application/json" }),
+  webhookRoutes
+);
 
 // Middleware for parsing JSON (for all other routes)
 app.use(bodyParser.json());
@@ -45,6 +50,7 @@ app.use(authenticateUser);
 // Protected routes
 app.use("/api/leads", leadsRoutes);
 app.use("/api/plans", plansRoutes);
+app.use("/api/users", userRoutes);
 
 // Connect to the database and start the server
 pool

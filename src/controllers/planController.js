@@ -175,7 +175,8 @@ const deletePlan = async (req, res) => {
 
 const buySubscriptionPlan = async (req, res) => {
   try {
-    const { planId, userId } = req.body;
+    const { planId } = req.body;
+    const userId = req.currentUser.id;
 
     if (!planId || !userId) {
       throw new Error("Plan ID and User ID are required");

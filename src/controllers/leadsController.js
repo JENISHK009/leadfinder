@@ -699,19 +699,28 @@ const deductCreditsFromUser = async (req, res) => {
 };
 
 const processAndInsertCompanies = async (results) => {
+  console.log(`Starting to process ${results.length} companies`);
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
+    console.log("Transaction started");
 
     // Create a temporary table to stage the data
     await client.query(
       "CREATE TEMP TABLE temp_companies (LIKE companies INCLUDING ALL) ON COMMIT DROP"
     );
+    console.log("Temporary table created");
 
     // Prepare the data for COPY
+    console.log("Preparing data for COPY operation");
     const data = results
-      .map((row) => {
+      .map((row, index) => {
+        // Debug problematic rows, especially around line 16
+        if (index === 15 || index === 16 || index === 17) { // Lines 16, 17, 18 (0-indexed)
+          console.log(`Debugging row ${index + 1}:`, JSON.stringify(row));
+        }
+
         const values = [
           row["Company"],
           row["# Employees"],
@@ -740,18 +749,37 @@ const processAndInsertCompanies = async (results) => {
           row["Short Description"],
           row["Founded Year"],
         ]
-          .map((val) =>
-            val === null || val === undefined || val === ""
-              ? "\\N"
-              : val.toString().replace(/[\t\n\\]/g, " ")
-          )
+          .map((val, colIndex) => {
+            if (val === null || val === undefined || val === "") {
+              return "\\N";
+            } else {
+              // Properly escape special characters including carriage returns
+              const escaped = val.toString()
+                .replace(/\\/g, "\\\\") // Escape backslashes first
+                .replace(/\r/g, "\\r")  // Escape carriage returns
+                .replace(/\n/g, "\\n")  // Escape newlines
+                .replace(/\t/g, "\\t"); // Escape tabs
+              
+              // Debug specific problematic values
+              if ((index === 15 || index === 16 || index === 17) && escaped !== val.toString()) {
+                console.log(`Row ${index + 1}, Column ${colIndex + 1} needed escaping: ${JSON.stringify(val)} -> ${JSON.stringify(escaped)}`);
+              }
+              return escaped;
+            }
+          })
           .join("\t");
 
         return values;
       })
       .join("\n");
 
+    console.log("Data preparation complete");
+    
+    // For debugging - check a small section of the prepared data
+    console.log("Sample of prepared data:", data.substring(0, 200) + "...");
+
     // Use COPY to insert data into the temporary table
+    console.log("Starting COPY operation");
     const copyStream = client.query(
       from(`COPY temp_companies (
             company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
@@ -766,11 +794,20 @@ const processAndInsertCompanies = async (results) => {
     readable.push(data);
     readable.push(null);
     await new Promise((resolve, reject) => {
-      readable.pipe(copyStream).on("finish", resolve).on("error", reject);
+      readable.pipe(copyStream)
+        .on("finish", () => {
+          console.log("COPY operation completed successfully");
+          resolve();
+        })
+        .on("error", (err) => {
+          console.error("Error during COPY operation:", err);
+          reject(err);
+        });
     });
 
     // Insert data from the temporary table into the main table, avoiding duplicates
-    await client.query(`
+    console.log("Inserting data from temporary table to main table");
+    const insertResult = await client.query(`
             INSERT INTO companies (
                 company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
                 company_street, company_city, company_state, company_country, company_postal_code, company_address,
@@ -791,42 +828,82 @@ const processAndInsertCompanies = async (results) => {
                 AND companies.company_address = temp_companies.company_address
             )
         `);
+    
+    console.log(`Inserted ${insertResult.rowCount} new records to companies table`);
 
     await client.query("COMMIT");
+    console.log("Transaction committed successfully");
+    return insertResult.rowCount;
   } catch (error) {
+    console.error("Error in processAndInsertCompanies:", error);
     await client.query("ROLLBACK");
+    console.log("Transaction rolled back due to error");
     throw error;
   } finally {
     client.release();
+    console.log("Database client released");
   }
 };
 
 const addCompaniesData = (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "CSV file is required" });
+  console.log("Starting addCompaniesData process");
+  if (!req.file) {
+    console.log("No file provided in request");
+    return res.status(400).json({ error: "CSV file is required" });
+  }
 
   const filePath = req.file.path;
+  console.log(`Processing CSV file: ${filePath}`);
   const results = [];
 
   fs.createReadStream(filePath)
     .pipe(csvParser())
-    .on("data", (data) => results.push(data))
+    .on("data", (data) => {
+      results.push(data);
+      if (results.length % 100 === 0) {
+        console.log(`Processed ${results.length} rows from CSV`);
+      }
+    })
     .on("end", async () => {
+      console.log(`CSV parsing complete. Total rows: ${results.length}`);
       try {
         const startTime = Date.now();
-        await processAndInsertCompanies(results);
+        console.log(`Starting database insertion at ${new Date(startTime).toISOString()}`);
+        const insertedCount = await processAndInsertCompanies(results);
         const endTime = Date.now();
         const timeTaken = (endTime - startTime) / 1000;
-        fs.unlinkSync(filePath); // Delete the temporary file
+        console.log(`Database insertion completed in ${timeTaken} seconds`);
+        
+        fs.unlinkSync(filePath);
+        console.log(`Temporary file ${filePath} deleted`);
+        
         return res.status(200).json({
           message: "Data inserted or updated successfully",
-          count: results.length,
+          total_rows: results.length,
+          inserted_rows: insertedCount,
           time_taken: `${timeTaken} seconds`,
         });
       } catch (error) {
-        fs.unlinkSync(filePath); // Delete the temporary file
-        console.error("Error processing data:", error);
-        return res.status(500).json({ error: "Error processing data" });
+        console.error("Error during data processing:", error);
+        try {
+          fs.unlinkSync(filePath);
+          console.log(`Temporary file ${filePath} deleted after error`);
+        } catch (unlinkError) {
+          console.error("Error deleting temporary file:", unlinkError);
+        }
+        return res.status(500).json({ 
+          error: "Error processing data", 
+          message: error.message,
+          details: error.detail || error.hint || null
+        });
       }
+    })
+    .on("error", (error) => {
+      console.error("Error parsing CSV:", error);
+      return res.status(500).json({ 
+        error: "Error parsing CSV file", 
+        message: error.message 
+      });
     });
 };
 

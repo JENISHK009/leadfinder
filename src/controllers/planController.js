@@ -210,8 +210,8 @@ const buySubscriptionPlan = async (req, res) => {
         },
       ],
       mode: "payment",
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/cancel`,
+      success_url: "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/success",
+      cancel_url: "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/fail",
       metadata: {
         userId,
         planId,

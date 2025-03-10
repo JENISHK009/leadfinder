@@ -573,10 +573,16 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 const deductCreditsFromUser = async (req, res) => {
   try {
     const { count } = req.body;
-    const userId = req.currentUser.id;
+    const { id: userId, roleName } = req.currentUser;
 
     if (!userId) {
       return errorResponse(res, "User information not found", 400);
+    }
+
+    if (roleName === "admin") {
+      return successResponse(res, {
+        message: "Admins are not required to deduct credits.",
+      });
     }
 
     if (!count || typeof count !== "number" || count <= 0) {

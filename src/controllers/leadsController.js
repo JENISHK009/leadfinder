@@ -407,6 +407,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
     const userId = req.currentUser.id;
     const userEmail = req.currentUser.email;
+    const userRole = req.currentUser.role;
 
     if (!userId || !userEmail)
       return errorResponse(res, "User information not found", 400);
@@ -417,31 +418,25 @@ const exportPeopleLeadsToCSV = async (req, res) => {
     let values = [];
     let index = 1;
 
-    // Updated helper functions for case-insensitive include/exclude array filters
+    // Add filters dynamically (same logic as before)
     const addIncludeFilter = (field, valueArray) => {
       if (valueArray && valueArray.length > 0) {
-        // Use ILIKE for case-insensitive matching with ANY
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" OR ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
 
     const addExcludeFilter = (field, valueArray) => {
       if (valueArray && valueArray.length > 0) {
-        // Use ILIKE for case-insensitive matching with ALL
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" AND ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
@@ -454,7 +449,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       }
     };
 
-    // Add search functionality
+    // Apply filters
     if (search) {
       baseQuery += ` AND (
                 company ILIKE $${index} OR 
@@ -468,124 +463,33 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       index++;
     }
 
-    // Handle industry filters
     addIncludeFilter("industry", includeIndustry);
     addExcludeFilter("industry", excludeIndustry);
-
-    // Handle employee count filter - map to num_employees
-    if (includeemployeeCount && includeemployeeCount.length > 0) {
-      // Handle employee count ranges (e.g., "11-50")
-      const employeeRanges = [];
-
-      for (const range of includeemployeeCount) {
-        const [min, max] = range.split("-").map(Number);
-        if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${
-            index + 1
-          })`;
-          values.push(min, max);
-          index += 2;
-        } else if (!isNaN(min) && range.includes("+")) {
-          baseQuery += ` AND num_employees >= $${index}`;
-          values.push(min);
-          index++;
-        } else {
-          // Handle specific values or other formats
-          addStringFilter("num_employees::text", range);
-        }
-      }
-    }
-
-    // Handle revenue filter - map to annual_revenue
-    if (includeRevenue && includeRevenue.length > 0) {
-      const revenueConditions = [];
-      for (const range of includeRevenue) {
-        const [min, max] = range.split("-").map((value) => {
-          if (value.endsWith("M")) {
-            return parseFloat(value) * 1000000;
-          } else if (value.endsWith("B")) {
-            return parseFloat(value) * 1000000000;
-          } else {
-            return parseFloat(value);
-          }
-        });
-
-        if (!isNaN(min) && !isNaN(max)) {
-          revenueConditions.push(
-            `(annual_revenue >= $${index} AND annual_revenue <= $${index + 1})`
-          );
-          values.push(min, max);
-          index += 2;
-        } else if (!isNaN(min) && range.includes("+")) {
-          revenueConditions.push(`(annual_revenue >= $${index})`);
-          values.push(min);
-          index++;
-        }
-      }
-
-      if (revenueConditions.length > 0) {
-        baseQuery += ` AND (` + revenueConditions.join(" OR ") + `)`;
-      }
-    }
-
-    // Handle management role filter - map to seniority
-    addIncludeFilter("seniority", includemanagmentRole);
-
-    // Handle company filter
     addIncludeFilter("company", includeCompany);
     addExcludeFilter("company", excludeCompany);
-
-    // Handle department keyword filter
+    addIncludeFilter("seniority", includemanagmentRole);
     addIncludeFilter("departments", includedepartmentKeyword);
+    addIncludeFilter("country", includePersonalCountry);
+    addExcludeFilter("country", excludePersonalCountry);
+    addIncludeFilter("company_country", includecompanyLocation);
+    addExcludeFilter("company_country", excludeCompanyLocation);
 
-    // Handle job title filters - map to title
+    // Handle job title filters
     if (includejobTitles && includejobTitles.length > 0) {
-      baseQuery += ` AND (`;
-      const titleConditions = includejobTitles.map(
-        (_, i) => `title ILIKE $${index + i}`
-      );
-      baseQuery += titleConditions.join(" OR ");
-      baseQuery += `)`;
-
-      includejobTitles.forEach((title) => {
-        values.push(`%${title}%`);
-      });
+      baseQuery += ` AND (${includejobTitles
+        .map((_, i) => `title ILIKE $${index + i}`)
+        .join(" OR ")})`;
+      values.push(...includejobTitles.map((title) => `%${title}%`));
       index += includejobTitles.length;
     }
 
     if (excludeJobTitles && excludeJobTitles.length > 0) {
-      baseQuery += ` AND (`;
-      const excludeTitleConditions = excludeJobTitles.map(
-        (_, i) => `title NOT ILIKE $${index + i}`
-      );
-      baseQuery += excludeTitleConditions.join(" AND ");
-      baseQuery += `)`;
-
-      excludeJobTitles.forEach((title) => {
-        values.push(`%${title}%`);
-      });
+      baseQuery += ` AND (${excludeJobTitles
+        .map((_, i) => `title NOT ILIKE $${index + i}`)
+        .join(" AND ")})`;
+      values.push(...excludeJobTitles.map((title) => `%${title}%`));
       index += excludeJobTitles.length;
     }
-
-    if (includetechnology && includetechnology.length > 0) {
-      baseQuery += ` AND (`;
-      const techConditions = includetechnology.map(
-        (_, i) => `technologies ILIKE $${index + i}`
-      );
-      baseQuery += techConditions.join(" OR ");
-      baseQuery += `)`;
-
-      includetechnology.forEach((tech) => {
-        values.push(`%${tech}%`);
-      });
-      index += includetechnology.length;
-    }
-
-    addIncludeFilter("country", includePersonalCountry);
-    addExcludeFilter("country", excludePersonalCountry);
-
-    addIncludeFilter("company_country", includecompanyLocation);
-    addExcludeFilter("company_country", excludeCompanyLocation);
 
     // Add LIMIT to the query
     baseQuery += ` LIMIT $${index}`;
@@ -602,15 +506,18 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       return errorResponse(res, "No data found to export", 404);
     }
 
-    const creditsToDeduct = rows.length;
-    const deductionResult = await deductCredits(userId, creditsToDeduct);
+    if (userRole !== "admin") {
+      // Deduct credits only if the user is NOT an admin
+      const creditsToDeduct = rows.length;
+      const deductionResult = await deductCredits(userId, creditsToDeduct);
 
-    if (!deductionResult.success) {
-      await client.query("ROLLBACK");
-      return errorResponse(res, "Insufficient credits to export leads", 403);
+      if (!deductionResult.success) {
+        await client.query("ROLLBACK");
+        return errorResponse(res, "Insufficient credits to export leads", 403);
+      }
     }
 
-    // Improve CSV generation to handle special characters and commas properly
+    // Generate CSV
     const csvHeader = Object.keys(rows[0]).join(",") + "\n";
     const csvRows = rows
       .map((row) =>
@@ -618,7 +525,6 @@ const exportPeopleLeadsToCSV = async (req, res) => {
           .map((value) => {
             if (value === null || value === undefined) return "";
             if (typeof value === "string") {
-              // Escape quotes and wrap fields with commas or quotes in double quotes
               const escaped = value.replace(/"/g, '""');
               return value.includes(",") ||
                 value.includes('"') ||
@@ -637,12 +543,12 @@ const exportPeopleLeadsToCSV = async (req, res) => {
     if (rows.length > 1000) {
       // If limit is greater than 1000, send the CSV via email
       await sendCSVEmail(userEmail, csvData);
-
       await client.query("COMMIT");
 
       return successResponse(res, {
-        message: `CSV file has been sent to your email. ${creditsToDeduct} credit(s) deducted.`,
-        remaining_credits: deductionResult.remainingCredits,
+        message: `CSV file has been sent to your email.`,
+        remaining_credits:
+          userRole !== "admin" ? deductionResult.remainingCredits : "N/A",
       });
     } else {
       // If limit is 1000 or less, send the CSV as a downloadable response
@@ -717,7 +623,8 @@ const processAndInsertCompanies = async (results) => {
     const data = results
       .map((row, index) => {
         // Debug problematic rows, especially around line 16
-        if (index === 15 || index === 16 || index === 17) { // Lines 16, 17, 18 (0-indexed)
+        if (index === 15 || index === 16 || index === 17) {
+          // Lines 16, 17, 18 (0-indexed)
           console.log(`Debugging row ${index + 1}:`, JSON.stringify(row));
         }
 
@@ -754,15 +661,25 @@ const processAndInsertCompanies = async (results) => {
               return "\\N";
             } else {
               // Properly escape special characters including carriage returns
-              const escaped = val.toString()
+              const escaped = val
+                .toString()
                 .replace(/\\/g, "\\\\") // Escape backslashes first
-                .replace(/\r/g, "\\r")  // Escape carriage returns
-                .replace(/\n/g, "\\n")  // Escape newlines
+                .replace(/\r/g, "\\r") // Escape carriage returns
+                .replace(/\n/g, "\\n") // Escape newlines
                 .replace(/\t/g, "\\t"); // Escape tabs
-              
+
               // Debug specific problematic values
-              if ((index === 15 || index === 16 || index === 17) && escaped !== val.toString()) {
-                console.log(`Row ${index + 1}, Column ${colIndex + 1} needed escaping: ${JSON.stringify(val)} -> ${JSON.stringify(escaped)}`);
+              if (
+                (index === 15 || index === 16 || index === 17) &&
+                escaped !== val.toString()
+              ) {
+                console.log(
+                  `Row ${index + 1}, Column ${
+                    colIndex + 1
+                  } needed escaping: ${JSON.stringify(val)} -> ${JSON.stringify(
+                    escaped
+                  )}`
+                );
               }
               return escaped;
             }
@@ -774,7 +691,7 @@ const processAndInsertCompanies = async (results) => {
       .join("\n");
 
     console.log("Data preparation complete");
-    
+
     // For debugging - check a small section of the prepared data
     console.log("Sample of prepared data:", data.substring(0, 200) + "...");
 
@@ -794,7 +711,8 @@ const processAndInsertCompanies = async (results) => {
     readable.push(data);
     readable.push(null);
     await new Promise((resolve, reject) => {
-      readable.pipe(copyStream)
+      readable
+        .pipe(copyStream)
         .on("finish", () => {
           console.log("COPY operation completed successfully");
           resolve();
@@ -828,8 +746,10 @@ const processAndInsertCompanies = async (results) => {
                 AND companies.company_address = temp_companies.company_address
             )
         `);
-    
-    console.log(`Inserted ${insertResult.rowCount} new records to companies table`);
+
+    console.log(
+      `Inserted ${insertResult.rowCount} new records to companies table`
+    );
 
     await client.query("COMMIT");
     console.log("Transaction committed successfully");
@@ -868,15 +788,17 @@ const addCompaniesData = (req, res) => {
       console.log(`CSV parsing complete. Total rows: ${results.length}`);
       try {
         const startTime = Date.now();
-        console.log(`Starting database insertion at ${new Date(startTime).toISOString()}`);
+        console.log(
+          `Starting database insertion at ${new Date(startTime).toISOString()}`
+        );
         const insertedCount = await processAndInsertCompanies(results);
         const endTime = Date.now();
         const timeTaken = (endTime - startTime) / 1000;
         console.log(`Database insertion completed in ${timeTaken} seconds`);
-        
+
         fs.unlinkSync(filePath);
         console.log(`Temporary file ${filePath} deleted`);
-        
+
         return res.status(200).json({
           message: "Data inserted or updated successfully",
           total_rows: results.length,
@@ -891,18 +813,18 @@ const addCompaniesData = (req, res) => {
         } catch (unlinkError) {
           console.error("Error deleting temporary file:", unlinkError);
         }
-        return res.status(500).json({ 
-          error: "Error processing data", 
+        return res.status(500).json({
+          error: "Error processing data",
           message: error.message,
-          details: error.detail || error.hint || null
+          details: error.detail || error.hint || null,
         });
       }
     })
     .on("error", (error) => {
       console.error("Error parsing CSV:", error);
-      return res.status(500).json({ 
-        error: "Error parsing CSV file", 
-        message: error.message 
+      return res.status(500).json({
+        error: "Error parsing CSV file",
+        message: error.message,
       });
     });
 };
@@ -1112,6 +1034,7 @@ const exportCompaniesToCSV = async (req, res) => {
 
     const userId = req.currentUser.id;
     const userEmail = req.currentUser.email;
+    const userRole = req.currentUser.role; // Get user role
 
     if (!userId || !userEmail)
       return res.status(400).json({ error: "User information not found" });
@@ -1129,9 +1052,7 @@ const exportCompaniesToCSV = async (req, res) => {
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" OR ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
@@ -1142,9 +1063,7 @@ const exportCompaniesToCSV = async (req, res) => {
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" AND ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
@@ -1186,7 +1105,6 @@ const exportCompaniesToCSV = async (req, res) => {
           values.push(min);
           index++;
         } else {
-          // Handle specific values or other formats
           addStringFilter("num_employees::text", range);
         }
       }
@@ -1228,17 +1146,14 @@ const exportCompaniesToCSV = async (req, res) => {
       }
     }
 
-    // Handle company location filters
+    // Apply filters
     addIncludeFilter("company_country", includeCompanyLocation);
     addExcludeFilter("company_country", excludeCompanyLocation);
-
-    // Handle industry filters
     addIncludeFilter("industry", includeIndustry);
     addExcludeFilter("industry", excludeIndustry);
-
-    // Handle company name filters
     addIncludeFilter("company_name", includeCompany);
     addExcludeFilter("company_name", excludeCompany);
+    addStringFilter("company_name", includeCompanyKeyword);
 
     // Handle technology filters
     if (includeTechnology && includeTechnology.length > 0) {
@@ -1255,9 +1170,6 @@ const exportCompaniesToCSV = async (req, res) => {
       index += includeTechnology.length;
     }
 
-    // Handle company keyword filter
-    addStringFilter("company_name", includeCompanyKeyword);
-
     // Add LIMIT to the query
     baseQuery += ` LIMIT $${index}`;
     values.push(limit);
@@ -1273,15 +1185,17 @@ const exportCompaniesToCSV = async (req, res) => {
       return res.status(404).json({ error: "No data found to export" });
     }
 
-    // Deduct credits (if applicable)
-    const creditsToDeduct = rows.length;
-    const deductionResult = await deductCredits(userId, creditsToDeduct);
+    if (userRole !== "admin") {
+      // Deduct credits only if the user is NOT an admin
+      const creditsToDeduct = rows.length;
+      const deductionResult = await deductCredits(userId, creditsToDeduct);
 
-    if (!deductionResult.success) {
-      await client.query("ROLLBACK");
-      return res
-        .status(403)
-        .json({ error: "Insufficient credits to export data" });
+      if (!deductionResult.success) {
+        await client.query("ROLLBACK");
+        return res
+          .status(403)
+          .json({ error: "Insufficient credits to export data" });
+      }
     }
 
     // Generate CSV data
@@ -1292,7 +1206,6 @@ const exportCompaniesToCSV = async (req, res) => {
           .map((value) => {
             if (value === null || value === undefined) return "";
             if (typeof value === "string") {
-              // Escape quotes and wrap fields with commas or quotes in double quotes
               const escaped = value.replace(/"/g, '""');
               return value.includes(",") ||
                 value.includes('"') ||
@@ -1315,8 +1228,9 @@ const exportCompaniesToCSV = async (req, res) => {
       await client.query("COMMIT");
 
       return res.status(200).json({
-        message: `CSV file has been sent to your email. ${creditsToDeduct} credit(s) deducted.`,
-        remaining_credits: deductionResult.remainingCredits,
+        message: `CSV file has been sent to your email.`,
+        remaining_credits:
+          userRole !== "admin" ? deductionResult.remainingCredits : "N/A",
       });
     } else {
       // If limit is 1000 or less, send the CSV as a downloadable response

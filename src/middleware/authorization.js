@@ -13,7 +13,12 @@ const authenticateUser = async (req, res, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        const userQuery = 'SELECT * FROM users WHERE id = $1';
+        const userQuery = `
+            SELECT users.id, users.email, users.role_id, roles.name AS role_name
+            FROM users
+            LEFT JOIN roles ON users.role_id = roles.id
+            WHERE users.id = $1
+        `;
         const { rows } = await pool.query(userQuery, [decoded.id]);
 
         if (rows.length === 0) {
@@ -25,8 +30,10 @@ const authenticateUser = async (req, res, next) => {
         req.currentUser = {
             id: user.id,
             email: user.email,
-            role: user.role,
+            roleId: user.role_id,
+            roleName: user.role_name
         };
+        console.log("req.currentUser", req.currentUser);
 
         next();
     } catch (error) {
@@ -41,5 +48,6 @@ const authenticateUser = async (req, res, next) => {
         }
     }
 };
+
 
 export default authenticateUser;

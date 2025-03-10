@@ -407,8 +407,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
     const userId = req.currentUser.id;
     const userEmail = req.currentUser.email;
-    const userRole = req.currentUser.role;
-
+    const userRole = req.currentUser.roleName;
     if (!userId || !userEmail)
       return errorResponse(res, "User information not found", 400);
 
@@ -1034,7 +1033,7 @@ const exportCompaniesToCSV = async (req, res) => {
 
     const userId = req.currentUser.id;
     const userEmail = req.currentUser.email;
-    const userRole = req.currentUser.role; // Get user role
+    const userRole = req.currentUser.roleName; // Get user role
 
     if (!userId || !userEmail)
       return res.status(400).json({ error: "User information not found" });

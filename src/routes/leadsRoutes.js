@@ -20,5 +20,7 @@ router.post(
 );
 router.post("/getCompanies", leadsController.getCompanies);
 router.post("/exportCompaniesToCSV", leadsController.exportCompaniesToCSV);
+router.put("/editPeopleLeadsData", leadsController.editPeopleLeadsData);
+router.put("/editCompanyLeadData", leadsController.editCompanyLeadData);
 
 export default router;

@@ -131,7 +131,7 @@ const processAndInsertLeads = async (results) => {
   }
 };
 
-const addPeopleLeadsData = (req, res) => {
+const addPeopleLeadsData = async (req, res) => {
   if (!req.file) return errorResponse(res, "CSV file is required");
 
   const filePath = req.file.path;
@@ -158,6 +158,36 @@ const addPeopleLeadsData = (req, res) => {
         return errorResponse(res, error.message, 500);
       }
     });
+};
+
+const editPeopleLeadsData = async (req, res) => {
+  const { id, ...updateFields } = req.body;
+
+  if (!id) return errorResponse(res, "ID is required");
+  if (Object.keys(updateFields).length === 0)
+    return errorResponse(res, "No fields provided for update");
+
+  try {
+    const keys = Object.keys(updateFields);
+    const values = Object.values(updateFields);
+    const setClause = keys
+      .map((key, index) => `${key} = $${index + 1}`)
+      .join(", ");
+
+    const query = `UPDATE peopleLeads SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $${
+      keys.length + 1
+    } RETURNING *`;
+
+    const { rows } = await pool.query(query, [...values, id]);
+
+    if (rows.length === 0)
+      return errorResponse(res, "No record found with the given ID");
+
+    return successResponse(res, rows[0]);
+  } catch (error) {
+    console.error("Error updating people data:", error);
+    return errorResponse(res, "Failed to update data", 500);
+  }
 };
 
 const getPeopleLeads = async (req, res) => {
@@ -1258,6 +1288,36 @@ const exportCompaniesToCSV = async (req, res) => {
   }
 };
 
+const editCompanyLeadData = async (req, res) => {
+  const { id, ...updateFields } = req.body;
+
+  if (!id) return errorResponse(res, "ID is required");
+  if (Object.keys(updateFields).length === 0)
+    return errorResponse(res, "No fields provided for update");
+
+  try {
+    const keys = Object.keys(updateFields);
+    const values = Object.values(updateFields);
+    const setClause = keys
+      .map((key, index) => `${key} = $${index + 1}`)
+      .join(", ");
+
+    const query = `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $${
+      keys.length + 1
+    } RETURNING *`;
+
+    const { rows } = await pool.query(query, [...values, id]);
+
+    if (rows.length === 0)
+      return errorResponse(res, "No record found with the given ID");
+
+    return successResponse(res, rows[0]);
+  } catch (error) {
+    console.error("Error updating company data:", error);
+    return errorResponse(res, "Failed to update data", 500);
+  }
+};
+
 export {
   addPeopleLeadsData,
   getPeopleLeads,
@@ -1266,4 +1326,6 @@ export {
   addCompaniesData,
   getCompanies,
   exportCompaniesToCSV,
+  editPeopleLeadsData,
+  editCompanyLeadData,
 };

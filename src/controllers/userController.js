@@ -170,7 +170,6 @@ export async function getUserSubscriptionHistory(req, res) {
     }
 }
 
-
 export async function getUserPoints(req, res) {
     const userId = req.currentUser.id;
 

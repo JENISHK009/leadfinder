@@ -2,9 +2,8 @@ import pool from "../config/db.js";
 import { successResponse, errorResponse } from "../utils/index.js";
 import stripe from "../config/stripe.js";
 
-// Helper function to validate plan data
 const validatePlanData = (data) => {
-  const { name, description, points, price, duration } = data;
+  const { name, description, points, price, duration, features } = data;
   if (!name || !points || !price || !duration) {
     throw new Error("Missing required fields: name, points, price, duration");
   }
@@ -14,18 +13,24 @@ const validatePlanData = (data) => {
   if (typeof price !== "number" || price <= 0) {
     throw new Error("Price must be a positive number");
   }
+  if (features && !Array.isArray(features)) {
+    throw new Error("Features must be an array");
+  }
 };
 
 const createPlan = async (req, res) => {
   try {
-    const { name, description, points, price, duration } = req.body;
+    const { name, description, points, price, duration, features } = req.body;
 
     validatePlanData(req.body);
 
+    // Serialize the features array into a JSON string
+    const featuresJson = JSON.stringify(features || []); // Default to an empty array if features is undefined
+
     const { rows } = await pool.query(
-      `INSERT INTO subscription_plans (name, description, points, price, duration)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [name, description, points, price, duration]
+      `INSERT INTO subscription_plans (name, description, points, price, duration, features)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [name, description, points, price, duration, featuresJson] // Pass the serialized JSON string
     );
 
     return successResponse(res, {
@@ -38,7 +43,6 @@ const createPlan = async (req, res) => {
   }
 };
 
-// Get all subscription plans
 const getAllPlans = async (req, res) => {
   try {
     const { rows } = await pool.query("SELECT * FROM subscription_plans");
@@ -52,7 +56,6 @@ const getAllPlans = async (req, res) => {
   }
 };
 
-// Get a specific subscription plan by ID
 const getPlanById = async (req, res) => {
   try {
     const { id } = req.query; // Get ID from query parameters
@@ -80,10 +83,10 @@ const getPlanById = async (req, res) => {
   }
 };
 
-// Update a subscription plan by ID (Admin only)
 const updatePlan = async (req, res) => {
   try {
-    const { id, name, description, points, price, duration } = req.body;
+    const { id, name, description, points, price, duration, features } =
+      req.body;
 
     if (!id) {
       throw new Error("Plan ID is required");
@@ -119,6 +122,11 @@ const updatePlan = async (req, res) => {
       values.push(duration);
       index++;
     }
+    if (features !== undefined) {
+      query += `features = $${index}, `;
+      values.push(JSON.stringify(features)); // Serialize features array to JSON string
+      index++;
+    }
 
     // Remove the trailing comma and space
     query = query.slice(0, -2);
@@ -144,7 +152,6 @@ const updatePlan = async (req, res) => {
   }
 };
 
-// Delete a subscription plan by ID (Admin only)
 const deletePlan = async (req, res) => {
   try {
     const { id } = req.body; // Get ID from request body
@@ -203,6 +210,9 @@ const buySubscriptionPlan = async (req, res) => {
             product_data: {
               name: plan.name,
               description: plan.description,
+              metadata: {
+                features: JSON.stringify(plan.features), // Include features in metadata
+              },
             },
             unit_amount: plan.price * 100, // Stripe expects amount in cents
           },
@@ -210,8 +220,10 @@ const buySubscriptionPlan = async (req, res) => {
         },
       ],
       mode: "payment",
-      success_url: "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/success",
-      cancel_url: "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/fail",
+      success_url:
+        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/success",
+      cancel_url:
+        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/fail",
       metadata: {
         userId,
         planId,
@@ -233,6 +245,81 @@ const buySubscriptionPlan = async (req, res) => {
   }
 };
 
+const addCreditsToUser = async (req, res) => {
+  try {
+    const { userId, planId, comment } = req.body;
+
+    // Check if the current user is an admin
+    if (req.currentUser.roleName !== "admin") {
+      return errorResponse(
+        res,
+        "Unauthorized: Only admins can add credits",
+        403
+      );
+    }
+
+    // Validate required fields
+    if (!userId || !planId) {
+      return errorResponse(res, "User ID and Plan ID are required", 400);
+    }
+
+    // Check if the user exists
+    const userQuery = await pool.query("SELECT * FROM users WHERE id = $1", [
+      userId,
+    ]);
+    const user = userQuery.rows[0];
+
+    if (!user) {
+      return errorResponse(res, "User not found", 404);
+    }
+
+    // Fetch the plan details
+    const planQuery = await pool.query(
+      "SELECT * FROM subscription_plans WHERE id = $1",
+      [planId]
+    );
+    const plan = planQuery.rows[0];
+
+    if (!plan) {
+      return errorResponse(res, "Plan not found", 404);
+    }
+
+    // Update the user's credits by adding the plan's points
+    const updatedCredits = user.credits + plan.points;
+    await pool.query("UPDATE users SET credits = $1 WHERE id = $2", [
+      updatedCredits,
+      userId,
+    ]);
+
+    // Add a record to the user_subscriptions table with the plan_id and comment
+    await pool.query(
+      `INSERT INTO user_subscriptions (user_id, plan_id, status, starts_at, ends_at, comment)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        userId,
+        planId, // Use the provided plan_id
+        "active", // Status to indicate active subscription
+        new Date(), // starts_at
+        new Date(new Date().setFullYear(new Date().getFullYear() + 1)), // ends_at (1 year from now)
+        comment || `Credits added via plan: ${plan.name}`, // Default comment if not provided
+      ]
+    );
+
+    return successResponse(res, {
+      message: "Credits added successfully",
+      data: {
+        userId,
+        planId,
+        newCredits: updatedCredits,
+        planName: plan.name,
+      },
+    });
+  } catch (error) {
+    console.error("Error adding credits:", error);
+    return errorResponse(res, error.message || "Error adding credits", 500);
+  }
+};
+
 export {
   createPlan,
   getAllPlans,
@@ -240,4 +327,5 @@ export {
   updatePlan,
   deletePlan,
   buySubscriptionPlan,
+  addCreditsToUser,
 };

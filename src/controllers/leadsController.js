@@ -21,10 +21,13 @@ const processAndInsertLeads = async (results) => {
 
   try {
     await client.query("BEGIN");
+
+    // Create a temporary table to stage the data
     await client.query(
       "CREATE TEMP TABLE temp_leads (LIKE peopleLeads INCLUDING ALL) ON COMMIT DROP"
     );
 
+    // Prepare the data for COPY
     const data = results
       .map((row) => {
         const values = [
@@ -74,6 +77,7 @@ const processAndInsertLeads = async (results) => {
       })
       .join("\n");
 
+    // Use COPY to insert data into the temporary table
     const copyStream = client.query(
       from(`COPY temp_leads (
             first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
@@ -91,36 +95,97 @@ const processAndInsertLeads = async (results) => {
       readable.pipe(copyStream).on("finish", resolve).on("error", reject);
     });
 
+    // Update or insert company data based on company_linkedin_url
     await client.query(`
-            INSERT INTO peopleLeads (
-                first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
-                mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
-                facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
-                seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
-                last_raised_at, num_retail_locations
-            )
-            SELECT 
-                first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
-                mobile_phone, corporate_phone, num_employees::integer, industry, keywords, linkedin_url, website, company_linkedin_url,
-                facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
-                seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
-                last_raised_at::date, num_retail_locations::integer
-            FROM temp_leads
-            ON CONFLICT (email) DO UPDATE SET
-                first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, title = EXCLUDED.title,
-                company = EXCLUDED.company, email_status = EXCLUDED.email_status, seniority = EXCLUDED.seniority,
-                departments = EXCLUDED.departments, work_direct_phone = EXCLUDED.work_direct_phone,
-                mobile_phone = EXCLUDED.mobile_phone, corporate_phone = EXCLUDED.corporate_phone,
-                num_employees = EXCLUDED.num_employees, industry = EXCLUDED.industry, keywords = EXCLUDED.keywords,
-                linkedin_url = EXCLUDED.linkedin_url, website = EXCLUDED.website, company_linkedin_url = EXCLUDED.company_linkedin_url,
-                facebook_url = EXCLUDED.facebook_url, twitter_url = EXCLUDED.twitter_url, city = EXCLUDED.city,
-                state = EXCLUDED.state, country = EXCLUDED.country, company_address = EXCLUDED.company_address,
-                company_city = EXCLUDED.company_city, company_state = EXCLUDED.company_state, company_country = EXCLUDED.company_country,
-                seo_description = EXCLUDED.seo_description, technologies = EXCLUDED.technologies, annual_revenue = EXCLUDED.annual_revenue,
-                total_funding = EXCLUDED.total_funding, latest_funding = EXCLUDED.latest_funding,
-                latest_funding_amount = EXCLUDED.latest_funding_amount, last_raised_at = EXCLUDED.last_raised_at,
-                num_retail_locations = EXCLUDED.num_retail_locations, updated_at = CURRENT_TIMESTAMP
-        `);
+      INSERT INTO companies (
+        company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
+        company_street, company_city, company_state, company_country, company_postal_code, company_address,
+        keywords, company_phone, seo_description, technologies, total_funding, latest_funding, latest_funding_amount,
+        last_raised_at, annual_revenue, num_retail_locations, sic_codes, short_description, founded_year
+      )
+      SELECT 
+        company, num_employees::integer, industry, website, company_linkedin_url, facebook_url, twitter_url,
+        company_address, company_city, company_state, company_country, NULL, company_address,
+        keywords, NULL, seo_description, technologies, total_funding, latest_funding, latest_funding_amount,
+        last_raised_at::date, annual_revenue, num_retail_locations::integer, NULL, NULL, NULL
+      FROM temp_leads
+      WHERE company_linkedin_url IS NOT NULL
+      ON CONFLICT (company_linkedin_url) DO UPDATE SET
+        company_name = EXCLUDED.company_name,
+        num_employees = EXCLUDED.num_employees,
+        industry = EXCLUDED.industry,
+        website = EXCLUDED.website,
+        facebook_url = EXCLUDED.facebook_url,
+        twitter_url = EXCLUDED.twitter_url,
+        company_street = EXCLUDED.company_street,
+        company_city = EXCLUDED.company_city,
+        company_state = EXCLUDED.company_state,
+        company_country = EXCLUDED.company_country,
+        company_address = EXCLUDED.company_address,
+        keywords = EXCLUDED.keywords,
+        seo_description = EXCLUDED.seo_description,
+        technologies = EXCLUDED.technologies,
+        total_funding = EXCLUDED.total_funding,
+        latest_funding = EXCLUDED.latest_funding,
+        latest_funding_amount = EXCLUDED.latest_funding_amount,
+        last_raised_at = EXCLUDED.last_raised_at,
+        annual_revenue = EXCLUDED.annual_revenue,
+        num_retail_locations = EXCLUDED.num_retail_locations,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+
+    // Insert or update people leads data
+    await client.query(`
+      INSERT INTO peopleLeads (
+        first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
+        mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
+        facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
+        seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
+        last_raised_at, num_retail_locations
+      )
+      SELECT 
+        first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
+        mobile_phone, corporate_phone, num_employees::integer, industry, keywords, linkedin_url, website, company_linkedin_url,
+        facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
+        seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
+        last_raised_at::date, num_retail_locations::integer
+      FROM temp_leads
+      ON CONFLICT (email) DO UPDATE SET
+        first_name = EXCLUDED.first_name,
+        last_name = EXCLUDED.last_name,
+        title = EXCLUDED.title,
+        company = EXCLUDED.company,
+        email_status = EXCLUDED.email_status,
+        seniority = EXCLUDED.seniority,
+        departments = EXCLUDED.departments,
+        work_direct_phone = EXCLUDED.work_direct_phone,
+        mobile_phone = EXCLUDED.mobile_phone,
+        corporate_phone = EXCLUDED.corporate_phone,
+        num_employees = EXCLUDED.num_employees,
+        industry = EXCLUDED.industry,
+        keywords = EXCLUDED.keywords,
+        linkedin_url = EXCLUDED.linkedin_url,
+        website = EXCLUDED.website,
+        company_linkedin_url = EXCLUDED.company_linkedin_url,
+        facebook_url = EXCLUDED.facebook_url,
+        twitter_url = EXCLUDED.twitter_url,
+        city = EXCLUDED.city,
+        state = EXCLUDED.state,
+        country = EXCLUDED.country,
+        company_address = EXCLUDED.company_address,
+        company_city = EXCLUDED.company_city,
+        company_state = EXCLUDED.company_state,
+        company_country = EXCLUDED.company_country,
+        seo_description = EXCLUDED.seo_description,
+        technologies = EXCLUDED.technologies,
+        annual_revenue = EXCLUDED.annual_revenue,
+        total_funding = EXCLUDED.total_funding,
+        latest_funding = EXCLUDED.latest_funding,
+        latest_funding_amount = EXCLUDED.latest_funding_amount,
+        last_raised_at = EXCLUDED.last_raised_at,
+        num_retail_locations = EXCLUDED.num_retail_locations,
+        updated_at = CURRENT_TIMESTAMP
+    `);
 
     await client.query("COMMIT");
   } catch (error) {
@@ -1318,6 +1383,124 @@ const editCompanyLeadData = async (req, res) => {
   }
 };
 
+const getCompanyChartData = async (req, res) => {
+  try {
+    const client = await pool.connect();
+
+    // Fetch location data (group by company_city)
+    const locationQuery = `
+      SELECT company_city AS location, COUNT(*) AS count
+      FROM companies
+      WHERE company_city IS NOT NULL
+      GROUP BY company_city
+      ORDER BY count DESC;  -- Limit to top 10 locations
+    `;
+
+    // Fetch industry data (group by industry)
+    const industryQuery = `
+      SELECT industry, COUNT(*) AS count
+      FROM companies
+      WHERE industry IS NOT NULL
+      GROUP BY industry
+      ORDER BY count DESC;  -- Limit to top 10 industries
+    `;
+
+    // Fetch employee size data (group by num_employees into ranges)
+    const employeeSizeQuery = `
+      SELECT 
+        CASE
+          WHEN num_employees BETWEEN 1 AND 10 THEN '1-10'
+          WHEN num_employees BETWEEN 11 AND 50 THEN '11-50'
+          WHEN num_employees BETWEEN 51 AND 200 THEN '51-200'
+          WHEN num_employees BETWEEN 201 AND 500 THEN '201-500'
+          WHEN num_employees BETWEEN 501 AND 1000 THEN '501-1000'
+          WHEN num_employees > 1000 THEN '1000+'
+          ELSE 'Unknown'
+        END AS employee_size,
+        COUNT(*) AS count
+      FROM companies
+      WHERE num_employees IS NOT NULL
+      GROUP BY employee_size
+      ORDER BY employee_size;
+    `;
+
+    // Execute all queries in parallel
+    const [locationResult, industryResult, employeeSizeResult] =
+      await Promise.all([
+        client.query(locationQuery),
+        client.query(industryQuery),
+        client.query(employeeSizeQuery),
+      ]);
+
+    client.release();
+
+    // Format the data as arrays of arrays
+    const locationData = locationResult.rows.map((row) => [
+      row.location,
+      row.count,
+    ]);
+
+    const industryData = industryResult.rows.map((row) => [
+      row.industry,
+      row.count,
+    ]);
+
+    const employeeSizeData = employeeSizeResult.rows.map((row) => [
+      row.employee_size,
+      row.count,
+    ]);
+
+    return successResponse(res, {
+      message: "Chart data fetched successfully",
+      data: {
+        location: locationData,
+        industry: industryData,
+        employee_size: employeeSizeData,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching chart data:", error);
+    return errorResponse(res, "Error fetching chart data", 500);
+  }
+};
+
+const getPeopleLeadsDepartmentChartData = async (req, res) => {
+  try {
+    const client = await pool.connect();
+
+    // Fetch department data (group by departments)
+    const departmentQuery = `
+      SELECT departments, COUNT(*) AS count
+      FROM peopleLeads
+      WHERE departments IS NOT NULL
+      GROUP BY departments
+      ORDER BY count DESC
+      LIMIT 10;  -- Limit to top 10 departments
+    `;
+
+    // Execute the query
+    const departmentResult = await client.query(departmentQuery);
+
+    client.release();
+
+    // Format the data as an array of arrays
+    const departmentData = departmentResult.rows.map((row) => [
+      row.departments,
+      row.count,
+    ]);
+
+    return successResponse(res, {
+      message: "Department chart data fetched successfully",
+      data: {
+        departments: departmentData,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching department chart data:", error);
+    return errorResponse(res, "Error fetching department chart data", 500);
+  }
+};
+
 export {
   addPeopleLeadsData,
   getPeopleLeads,
@@ -1328,4 +1511,6 @@ export {
   exportCompaniesToCSV,
   editPeopleLeadsData,
   editCompanyLeadData,
+  getCompanyChartData,
+  getPeopleLeadsDepartmentChartData,
 };

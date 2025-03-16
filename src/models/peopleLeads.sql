@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS peopleLeads (
     company_country VARCHAR(100),
     industry VARCHAR(255),
     num_employees INT,
-    linkedin_url VARCHAR(500),
+    linkedin_url VARCHAR(500) UNIQUE,
     website VARCHAR(500),
     company_linkedin_url VARCHAR(500),
     facebook_url VARCHAR(500),

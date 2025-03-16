@@ -259,8 +259,16 @@ const addCreditsToUser = async (req, res) => {
     }
 
     // Validate required fields
-    if (!userId || !credits) {
+    if (!userId || credits === undefined || credits === null) {
       return errorResponse(res, "User ID and credits are required", 400);
+    }
+
+    // Convert credits to a number
+    const creditsNumber = Number(credits);
+
+    // Check if credits is a valid number
+    if (isNaN(creditsNumber)) {
+      return errorResponse(res, "Credits must be a valid number", 400);
     }
 
     // Check if the user exists
@@ -274,7 +282,7 @@ const addCreditsToUser = async (req, res) => {
     }
 
     // Update the user's credits by adding the provided credits
-    const updatedCredits = user.credits + credits;
+    const updatedCredits = user.credits + creditsNumber;
     await pool.query("UPDATE users SET credits = $1 WHERE id = $2", [
       updatedCredits,
       userId,
@@ -299,7 +307,7 @@ const addCreditsToUser = async (req, res) => {
       data: {
         userId,
         newCredits: updatedCredits,
-        addedCredits: credits,
+        addedCredits: creditsNumber,
         comment: comment || "Credits added manually by admin",
       },
     });

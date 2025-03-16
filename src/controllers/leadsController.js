@@ -1478,26 +1478,93 @@ const getPeopleLeadsDepartmentChartData = async (req, res) => {
       LIMIT 10;  -- Limit to top 10 departments
     `;
 
-    // Execute the query
-    const departmentResult = await client.query(departmentQuery);
+    // Fetch country data (group by country)
+    const countryQuery = `
+      SELECT country, COUNT(*) AS count
+      FROM peopleLeads
+      WHERE country IS NOT NULL
+      GROUP BY country
+      ORDER BY count DESC
+      LIMIT 10;  -- Limit to top 10 countries
+    `;
+
+    // Fetch industry data (group by industry)
+    const industryQuery = `
+      SELECT industry, COUNT(*) AS count
+      FROM peopleLeads
+      WHERE industry IS NOT NULL
+      GROUP BY industry
+      ORDER BY count DESC
+      LIMIT 10;  -- Limit to top 10 industries
+    `;
+
+    // Fetch employee size data (group by num_employees into ranges)
+    const employeeSizeQuery = `
+      SELECT 
+        CASE
+          WHEN num_employees BETWEEN 1 AND 10 THEN '1-10'
+          WHEN num_employees BETWEEN 11 AND 50 THEN '11-50'
+          WHEN num_employees BETWEEN 51 AND 200 THEN '51-200'
+          WHEN num_employees BETWEEN 201 AND 500 THEN '201-500'
+          WHEN num_employees BETWEEN 501 AND 1000 THEN '501-1000'
+          WHEN num_employees > 1000 THEN '1000+'
+          ELSE 'Unknown'
+        END AS employee_size,
+        COUNT(*) AS count
+      FROM peopleLeads
+      WHERE num_employees IS NOT NULL
+      GROUP BY employee_size
+      ORDER BY employee_size;
+    `;
+
+    // Execute all queries in parallel
+    const [
+      departmentResult,
+      countryResult,
+      industryResult,
+      employeeSizeResult,
+    ] = await Promise.all([
+      client.query(departmentQuery),
+      client.query(countryQuery),
+      client.query(industryQuery),
+      client.query(employeeSizeQuery),
+    ]);
 
     client.release();
 
-    // Format the data as an array of arrays
+    // Format the data as arrays of arrays
     const departmentData = departmentResult.rows.map((row) => [
       row.departments,
       row.count,
     ]);
 
+    const countryData = countryResult.rows.map((row) => [
+      row.country,
+      row.count,
+    ]);
+
+    const industryData = industryResult.rows.map((row) => [
+      row.industry,
+      row.count,
+    ]);
+
+    const employeeSizeData = employeeSizeResult.rows.map((row) => [
+      row.employee_size,
+      row.count,
+    ]);
+
     return successResponse(res, {
-      message: "Department chart data fetched successfully",
+      message: "Chart data fetched successfully",
       data: {
         departments: departmentData,
+        countries: countryData,
+        industries: industryData,
+        employee_sizes: employeeSizeData,
       },
     });
   } catch (error) {
-    console.error("Error fetching department chart data:", error);
-    return errorResponse(res, "Error fetching department chart data", 500);
+    console.error("Error fetching chart data:", error);
+    return errorResponse(res, "Error fetching chart data", 500);
   }
 };
 

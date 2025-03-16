@@ -247,7 +247,7 @@ const buySubscriptionPlan = async (req, res) => {
 
 const addCreditsToUser = async (req, res) => {
   try {
-    const { userId, planId, comment } = req.body;
+    const { userId, credits, comment } = req.body;
 
     // Check if the current user is an admin
     if (req.currentUser.roleName !== "admin") {
@@ -259,8 +259,8 @@ const addCreditsToUser = async (req, res) => {
     }
 
     // Validate required fields
-    if (!userId || !planId) {
-      return errorResponse(res, "User ID and Plan ID are required", 400);
+    if (!userId || !credits) {
+      return errorResponse(res, "User ID and credits are required", 400);
     }
 
     // Check if the user exists
@@ -273,35 +273,24 @@ const addCreditsToUser = async (req, res) => {
       return errorResponse(res, "User not found", 404);
     }
 
-    // Fetch the plan details
-    const planQuery = await pool.query(
-      "SELECT * FROM subscription_plans WHERE id = $1",
-      [planId]
-    );
-    const plan = planQuery.rows[0];
-
-    if (!plan) {
-      return errorResponse(res, "Plan not found", 404);
-    }
-
-    // Update the user's credits by adding the plan's points
-    const updatedCredits = user.credits + plan.points;
+    // Update the user's credits by adding the provided credits
+    const updatedCredits = user.credits + credits;
     await pool.query("UPDATE users SET credits = $1 WHERE id = $2", [
       updatedCredits,
       userId,
     ]);
 
-    // Add a record to the user_subscriptions table with the plan_id and comment
+    // Add a record to the user_subscriptions table with the credits and comment
     await pool.query(
       `INSERT INTO user_subscriptions (user_id, plan_id, status, starts_at, ends_at, comment)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         userId,
-        planId, // Use the provided plan_id
-        "active", // Status to indicate active subscription
+        null, // No plan_id since this is a manual credit addition
+        "manual", // Status to indicate manual credit addition
         new Date(), // starts_at
-        new Date(new Date().setFullYear(new Date().getFullYear() + 1)), // ends_at (1 year from now)
-        comment || `Credits added via plan: ${plan.name}`, // Default comment if not provided
+        new Date(), // ends_at (same as starts_at for manual credits)
+        comment || `Credits added manually by admin`, // Default comment if not provided
       ]
     );
 
@@ -309,9 +298,9 @@ const addCreditsToUser = async (req, res) => {
       message: "Credits added successfully",
       data: {
         userId,
-        planId,
         newCredits: updatedCredits,
-        planName: plan.name,
+        addedCredits: credits,
+        comment: comment || "Credits added manually by admin",
       },
     });
   } catch (error) {

@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS extra_credit_plans (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    price NUMERIC(10, 2) NOT NULL,
+    credits INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

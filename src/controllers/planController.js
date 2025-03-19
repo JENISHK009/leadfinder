@@ -3,16 +3,29 @@ import { successResponse, errorResponse } from "../utils/index.js";
 import stripe from "../config/stripe.js";
 
 const validatePlanData = (data) => {
-  const { name, description, points, price, duration, features } = data;
-  if (!name || !points || !price || !duration) {
-    throw new Error("Missing required fields: name, points, price, duration");
+  const { name, description, points, monthly_price, annual_price, duration, features } = data;
+
+  // Check for required fields
+  if (!name || !points || !monthly_price || !annual_price || !duration) {
+    throw new Error("Missing required fields: name, points, monthly_price, annual_price, duration");
   }
+
+  // Validate points
   if (typeof points !== "number" || points <= 0) {
     throw new Error("Points must be a positive number");
   }
-  if (typeof price !== "number" || price <= 0) {
-    throw new Error("Price must be a positive number");
+
+  // Validate monthly_price
+  if (typeof monthly_price !== "number" || monthly_price <= 0) {
+    throw new Error("Monthly price must be a positive number");
   }
+
+  // Validate annual_price
+  if (typeof annual_price !== "number" || annual_price <= 0) {
+    throw new Error("Annual price must be a positive number");
+  }
+
+  // Validate features
   if (features && !Array.isArray(features)) {
     throw new Error("Features must be an array");
   }
@@ -20,17 +33,19 @@ const validatePlanData = (data) => {
 
 const createPlan = async (req, res) => {
   try {
-    const { name, description, points, price, duration, features } = req.body;
+    const { name, description, points, monthly_price, annual_price, duration, features } = req.body;
 
+    // Validate the plan data
     validatePlanData(req.body);
 
     // Serialize the features array into a JSON string
-    const featuresJson = JSON.stringify(features || []); // Default to an empty array if features is undefined
+    const featuresJson = JSON.stringify(features || []);
 
+    // Insert the new plan into the database
     const { rows } = await pool.query(
-      `INSERT INTO subscription_plans (name, description, points, price, duration, features)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [name, description, points, price, duration, featuresJson] // Pass the serialized JSON string
+      `INSERT INTO subscription_plans (name, description, points, monthly_price, annual_price, duration, features)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, description, points, monthly_price, annual_price, duration, featuresJson]
     );
 
     return successResponse(res, {
@@ -85,8 +100,7 @@ const getPlanById = async (req, res) => {
 
 const updatePlan = async (req, res) => {
   try {
-    const { id, name, description, points, price, duration, features } =
-      req.body;
+    const { id, name, description, points, monthly_price, annual_price, duration, features } = req.body;
 
     if (!id) {
       throw new Error("Plan ID is required");
@@ -112,9 +126,14 @@ const updatePlan = async (req, res) => {
       values.push(points);
       index++;
     }
-    if (price !== undefined) {
-      query += `price = $${index}, `;
-      values.push(price);
+    if (monthly_price !== undefined) {
+      query += `monthly_price = $${index}, `;
+      values.push(monthly_price);
+      index++;
+    }
+    if (annual_price !== undefined) {
+      query += `annual_price = $${index}, `;
+      values.push(annual_price);
       index++;
     }
     if (duration !== undefined) {
@@ -182,22 +201,50 @@ const deletePlan = async (req, res) => {
 
 const buySubscriptionPlan = async (req, res) => {
   try {
-    const { planId } = req.body;
+    const { planId, type } = req.body; // `type` can be "monthly", "yearly", or "extra_credits"
     const userId = req.currentUser.id;
 
-    if (!planId || !userId) {
-      throw new Error("Plan ID and User ID are required");
+    // Validate required fields
+    if (!planId || !userId || !type) {
+      throw new Error("Plan ID, User ID, and Type are required");
+    }
+
+    // Validate the type
+    if (type !== "monthly" && type !== "yearly" && type !== "extra_credits") {
+      throw new Error("Type must be either 'monthly', 'yearly', or 'extra_credits'");
     }
 
     // Fetch the plan details from the database
-    const planQuery = await pool.query(
-      "SELECT * FROM subscription_plans WHERE id = $1",
-      [planId]
-    );
-    const plan = planQuery.rows[0];
+    let plan;
+    if (type === "extra_credits") {
+      const extraCreditPlanQuery = await pool.query(
+        "SELECT * FROM extra_credit_plans WHERE id = $1",
+        [planId]
+      );
+      plan = extraCreditPlanQuery.rows[0];
+    } else {
+      const subscriptionPlanQuery = await pool.query(
+        "SELECT * FROM subscription_plans WHERE id = $1",
+        [planId]
+      );
+      plan = subscriptionPlanQuery.rows[0];
+    }
 
     if (!plan) {
       return errorResponse(res, "Plan not found", 404);
+    }
+
+    // Determine the price and description based on the selected type
+    let price, description;
+    if (type === "monthly") {
+      price = plan.monthly_price;
+      description = "Monthly Subscription";
+    } else if (type === "yearly") {
+      price = plan.annual_price;
+      description = "Annual Subscription";
+    } else if (type === "extra_credits") {
+      price = plan.price;
+      description = "Extra Credits Purchase";
     }
 
     // Create a Stripe Checkout Session
@@ -209,12 +256,12 @@ const buySubscriptionPlan = async (req, res) => {
             currency: "usd",
             product_data: {
               name: plan.name,
-              description: plan.description,
+              description: description, // Include the description based on the type
               metadata: {
                 features: JSON.stringify(plan.features), // Include features in metadata
               },
             },
-            unit_amount: plan.price * 100, // Stripe expects amount in cents
+            unit_amount: price * 100, // Stripe expects amount in cents
           },
           quantity: 1,
         },
@@ -227,6 +274,7 @@ const buySubscriptionPlan = async (req, res) => {
       metadata: {
         userId,
         planId,
+        type, // Include the type in metadata
       },
     });
 
@@ -317,6 +365,170 @@ const addCreditsToUser = async (req, res) => {
   }
 };
 
+const createExtraCreditPlan = async (req, res) => {
+  try {
+    const { name, description, price, credits } = req.body;
+
+    if (!name || !price || !credits) {
+      throw new Error("Missing required fields: name, price, credits");
+    }
+
+    if (typeof price !== "number" || price <= 0) {
+      throw new Error("Price must be a positive number");
+    }
+    if (typeof credits !== "number" || credits <= 0) {
+      throw new Error("Credits must be a positive number");
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO extra_credit_plans (name, description, price, credits)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [name, description, price, credits]
+    );
+
+    return successResponse(res, {
+      message: "Extra credit plan created successfully",
+      data: rows[0],
+    });
+  } catch (error) {
+    console.error("Error creating extra credit plan:", error);
+    return errorResponse(
+      res,
+      error.message || "Error creating extra credit plan",
+      400
+    );
+  }
+};
+
+const updateExtraCreditPlan = async (req, res) => {
+  try {
+    const { id, name, description, price, credits } = req.body;
+
+    // Validate required fields
+    if (!id) {
+      throw new Error("Plan ID is required");
+    }
+
+    // Build the dynamic query based on provided fields
+    let query = "UPDATE extra_credit_plans SET ";
+    const values = [];
+    let index = 1;
+
+    if (name !== undefined) {
+      query += `name = $${index}, `;
+      values.push(name);
+      index++;
+    }
+    if (description !== undefined) {
+      query += `description = $${index}, `;
+      values.push(description);
+      index++;
+    }
+    if (price !== undefined) {
+      query += `price = $${index}, `;
+      values.push(price);
+      index++;
+    }
+    if (credits !== undefined) {
+      query += `credits = $${index}, `;
+      values.push(credits);
+      index++;
+    }
+
+    // Remove the trailing comma and space
+    query = query.slice(0, -2);
+
+    // Add the WHERE clause and RETURNING *
+    query += ` WHERE id = $${index} RETURNING *`;
+    values.push(id);
+
+    // Execute the query
+    const { rows } = await pool.query(query, values);
+
+    if (rows.length === 0) {
+      return errorResponse(res, "Extra credit plan not found", 404);
+    }
+
+    return successResponse(res, {
+      message: "Extra credit plan updated successfully",
+      data: rows[0],
+    });
+  } catch (error) {
+    console.error("Error updating extra credit plan:", error);
+    return errorResponse(
+      res,
+      error.message || "Error updating extra credit plan",
+      400
+    );
+  }
+};
+
+const getAllExtraCreditPlans = async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM extra_credit_plans");
+    return successResponse(res, {
+      message: "Extra credit plans fetched successfully",
+      data: rows,
+    });
+  } catch (error) {
+    console.error("Error fetching extra credit plans:", error);
+    return errorResponse(res, "Error fetching extra credit plans", 500);
+  }
+};
+
+const purchaseExtraCreditPlan = async (req, res) => {
+  try {
+    const { amount, credits } = req.body;
+    const userId = req.currentUser.id;
+
+    // Validate required fields
+    if (!amount || !credits || !userId) {
+      throw new Error("Amount, Credits, and User ID are required");
+    }
+
+    // Create a Stripe Checkout Session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: `Extra Credits Purchase - ${credits} Credits`,
+              description: `Purchase of ${credits} extra credits`,
+            },
+            unit_amount: amount * 100, // Stripe expects amount in cents
+          },
+          quantity: 1,
+        },
+      ],
+      mode: "payment",
+      success_url:
+        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/success",
+      cancel_url:
+        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/fail",
+      metadata: {
+        userId,
+        credits,
+        type: "extra_credits", // Indicate that this is an extra credit purchase
+      },
+    });
+
+    return successResponse(res, {
+      message: "Checkout session created successfully",
+      sessionId: session.id,
+      url: session.url, // Redirect the user to this URL for payment
+    });
+  } catch (error) {
+    console.error("Error creating checkout session:", error);
+    return errorResponse(
+      res,
+      error.message || "Error creating checkout session",
+      400
+    );
+  }
+};
+
 export {
   createPlan,
   getAllPlans,
@@ -325,4 +537,8 @@ export {
   deletePlan,
   buySubscriptionPlan,
   addCreditsToUser,
+  createExtraCreditPlan,
+  updateExtraCreditPlan,
+  getAllExtraCreditPlans,
+  purchaseExtraCreditPlan,
 };

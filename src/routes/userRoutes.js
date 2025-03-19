@@ -9,5 +9,7 @@ router.get(
   userController.getUserSubscriptionHistory
 );
 router.get("/getUserPoints", userController.getUserPoints);
+router.post("/updatePassword", userController.updatePassword);
+
 
 export default router;

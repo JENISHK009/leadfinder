@@ -1,4 +1,5 @@
 import pool from '../config/db.js';
+import bcrypt from 'bcrypt';
 import { successResponse, errorResponse } from '../utils/index.js';
 
 export async function getUsersWithActivePlans(req, res) {
@@ -180,10 +181,10 @@ export async function getUserPoints(req, res) {
     const client = await pool.connect();
 
     try {
-        console.log(`Fetching points for user ID: ${userId}`);
+        console.log(`Fetching points and active plan for user ID: ${userId}`);
 
         // Query to fetch the user's credits (points)
-        const query = `
+        const pointsQuery = `
             SELECT 
                 credits AS points
             FROM 
@@ -192,23 +193,114 @@ export async function getUserPoints(req, res) {
                 id = $1
         `;
 
-        const result = await client.query(query, [userId]);
+        const pointsResult = await client.query(pointsQuery, [userId]);
 
-        if (result.rows.length === 0) {
+        if (pointsResult.rows.length === 0) {
             return errorResponse(res, 'User not found', 404);
         }
 
-        const userPoints = result.rows[0];
+        const userPoints = pointsResult.rows[0];
 
-        console.log(`Retrieved points for user ID: ${userId}`);
+        // Query to fetch the user's active subscription plan
+        const activePlanQuery = `
+            SELECT 
+                us.plan_id,
+                sp.name AS plan_name,
+                sp.points AS plan_points,
+                us.starts_at,
+                us.ends_at
+            FROM 
+                user_subscriptions us
+            LEFT JOIN 
+                subscription_plans sp ON us.plan_id = sp.id
+            WHERE 
+                us.user_id = $1
+                AND us.status = 'active'
+                AND NOW() BETWEEN us.starts_at AND us.ends_at
+            ORDER BY 
+                us.starts_at DESC
+            LIMIT 1
+        `;
+
+        const activePlanResult = await client.query(activePlanQuery, [userId]);
+
+        let activePlan = null;
+
+        if (activePlanResult.rows.length > 0) {
+            activePlan = {
+                plan_id: activePlanResult.rows[0].plan_id,
+                plan_name: activePlanResult.rows[0].plan_name,
+                plan_points: activePlanResult.rows[0].plan_points,
+                starts_at: activePlanResult.rows[0].starts_at,
+                ends_at: activePlanResult.rows[0].ends_at,
+            };
+        }
+
+        console.log(`Retrieved points and active plan for user ID: ${userId}`);
 
         return successResponse(res, {
-                points: userPoints.points
+            points: userPoints.points,
+            active_plan: activePlan, // Include active plan details
         });
     } catch (error) {
-        console.error(`Error fetching points for user ID ${userId}:`, error);
-        return errorResponse(res, 'Error fetching user points', 500);
+        console.error(`Error fetching points and active plan for user ID ${userId}:`, error);
+        return errorResponse(res, 'Error fetching user points and active plan', 500);
     } finally {
         client.release();
     }
 }
+
+export async function updatePassword(req, res) {
+    const { newPassword } = req.body;
+  
+    // Validate required field
+    if (!newPassword) {
+      return errorResponse(res, 'New password is required');
+    }
+  
+    // Get the current user's ID from the JWT token
+    const userId = req.currentUser.id;
+  
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+  
+      // Fetch the current user's password from the database
+      const user = await client.query(
+        'SELECT password FROM public.users WHERE id = $1 FOR UPDATE',
+        [userId]
+      );
+  
+      if (user.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return errorResponse(res, 'User not found', 404);
+      }
+  
+      const currentHashedPassword = user.rows[0].password;
+  
+      // Check if the new password is the same as the current password
+      const isSamePassword = await bcrypt.compare(newPassword, currentHashedPassword);
+      if (isSamePassword) {
+        await client.query('ROLLBACK');
+        return errorResponse(res, 'New password cannot be the same as the current password');
+      }
+  
+      // Hash the new password
+      const newHashedPassword = await bcrypt.hash(newPassword, 10);
+  
+      // Update the user's password in the database
+      await client.query(
+        'UPDATE public.users SET password = $1 WHERE id = $2',
+        [newHashedPassword, userId]
+      );
+  
+      await client.query('COMMIT');
+      return successResponse(res, { message: 'Password updated successfully' });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error updating password:', error);
+      return errorResponse(res, 'Error updating password', 500);
+    } finally {
+      client.release();
+    }
+  }

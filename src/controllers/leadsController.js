@@ -97,6 +97,15 @@ const processAndInsertLeads = async (results) => {
 
     // Update or insert company data based on company_linkedin_url
     await client.query(`
+      -- Deduplicate the data in the temp_leads table
+      CREATE TEMP TABLE deduplicated_temp_leads AS
+      SELECT DISTINCT ON (company_linkedin_url) *
+      FROM temp_leads
+      WHERE company_linkedin_url IS NOT NULL
+      ORDER BY company_linkedin_url, id; -- Use a unique field like 'id' to determine which row to keep
+    `);
+
+    await client.query(`
       INSERT INTO companies (
         company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
         company_street, company_city, company_state, company_country, company_postal_code, company_address,
@@ -108,8 +117,7 @@ const processAndInsertLeads = async (results) => {
         company_address, company_city, company_state, company_country, NULL, company_address,
         keywords, NULL, seo_description, technologies, total_funding, latest_funding, latest_funding_amount,
         last_raised_at::date, annual_revenue, num_retail_locations::integer, NULL, NULL, NULL
-      FROM temp_leads
-      WHERE company_linkedin_url IS NOT NULL
+      FROM deduplicated_temp_leads
       ON CONFLICT (company_linkedin_url) DO UPDATE SET
         company_name = EXCLUDED.company_name,
         num_employees = EXCLUDED.num_employees,
@@ -134,7 +142,7 @@ const processAndInsertLeads = async (results) => {
         updated_at = CURRENT_TIMESTAMP
     `);
 
-    // Insert or update people leads data
+    // Insert or update people leads data based on linkedin_url
     await client.query(`
       INSERT INTO peopleLeads (
         first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
@@ -150,11 +158,12 @@ const processAndInsertLeads = async (results) => {
         seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
         last_raised_at::date, num_retail_locations::integer
       FROM temp_leads
-      ON CONFLICT (email) DO UPDATE SET
+      ON CONFLICT (linkedin_url) DO UPDATE SET
         first_name = EXCLUDED.first_name,
         last_name = EXCLUDED.last_name,
         title = EXCLUDED.title,
         company = EXCLUDED.company,
+        email = EXCLUDED.email,
         email_status = EXCLUDED.email_status,
         seniority = EXCLUDED.seniority,
         departments = EXCLUDED.departments,
@@ -164,7 +173,6 @@ const processAndInsertLeads = async (results) => {
         num_employees = EXCLUDED.num_employees,
         industry = EXCLUDED.industry,
         keywords = EXCLUDED.keywords,
-        linkedin_url = EXCLUDED.linkedin_url,
         website = EXCLUDED.website,
         company_linkedin_url = EXCLUDED.company_linkedin_url,
         facebook_url = EXCLUDED.facebook_url,
@@ -276,37 +284,34 @@ const getPeopleLeads = async (req, res) => {
       search,
       page = 1,
       limit = 10,
+      perCompany = null,
+      funding = null, // Add funding filter
+      foundingYear = null, // Add foundingYear filter (array of years)
     } = req.body;
 
     let baseQuery = `SELECT *, COUNT(*) OVER() AS total_count FROM peopleLeads WHERE 1=1`;
     let values = [];
     let index = 1;
 
-    // Updated helper functions for case-insensitive include/exclude array filters
+    // Helper functions for case-insensitive include/exclude array filters
     const addIncludeFilter = (field, valueArray) => {
       if (valueArray && valueArray.length > 0) {
-        // Use ILIKE for case-insensitive matching with ANY
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" OR ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
 
     const addExcludeFilter = (field, valueArray) => {
       if (valueArray && valueArray.length > 0) {
-        // Use ILIKE for case-insensitive matching with ALL
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" AND ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
@@ -339,9 +344,6 @@ const getPeopleLeads = async (req, res) => {
 
     // Handle employee count filter - map to num_employees
     if (includeemployeeCount && includeemployeeCount.length > 0) {
-      // Handle employee count ranges (e.g., "11-50")
-      const employeeRanges = [];
-
       for (const range of includeemployeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
@@ -432,6 +434,7 @@ const getPeopleLeads = async (req, res) => {
       index += excludeJobTitles.length;
     }
 
+    // Handle technology filter
     if (includetechnology && includetechnology.length > 0) {
       baseQuery += ` AND (`;
       const techConditions = includetechnology.map(
@@ -446,21 +449,84 @@ const getPeopleLeads = async (req, res) => {
       index += includetechnology.length;
     }
 
+    // Handle personal country filters
     addIncludeFilter("country", includePersonalCountry);
     addExcludeFilter("country", excludePersonalCountry);
 
+    // Handle company location filters
     addIncludeFilter("company_country", includecompanyLocation);
     addExcludeFilter("company_country", excludeCompanyLocation);
 
+    // Handle funding filter
+    if (funding && funding.length > 0) {
+      baseQuery += ` AND (`;
+      const fundingConditions = funding.map(
+        (_, i) => `latest_funding ILIKE $${index + i}`
+      );
+      baseQuery += fundingConditions.join(" OR ");
+      baseQuery += `)`;
+
+      funding.forEach((fund) => {
+        values.push(`%${fund}%`);
+      });
+      index += funding.length;
+    }
+
+    // Handle founding year filter (multiple values)
+    if (foundingYear && foundingYear.length > 0) {
+      baseQuery += ` AND (`;
+      const yearConditions = foundingYear.map(
+        (_, i) => `EXTRACT(YEAR FROM last_raised_at) = $${index + i}`
+      );
+      baseQuery += yearConditions.join(" OR ");
+      baseQuery += `)`;
+
+      foundingYear.forEach((year) => {
+        values.push(year);
+      });
+      index += foundingYear.length;
+    }
+
     // Pagination
     const offset = (page - 1) * limit;
-    baseQuery += ` ORDER BY id ASC LIMIT $${index++} OFFSET $${index++}`;
-    values.push(limit, offset);
 
-    console.log("baseQuery>", baseQuery);
+    let finalQuery;
+
+    if (perCompany && perCompany > 0) {
+      // If perCompany is specified, use a window function to limit records per company
+      finalQuery = `
+        WITH filtered_leads AS (
+          ${baseQuery}
+        ),
+        company_grouped AS (
+          SELECT 
+            fl.*,
+            ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
+          FROM 
+            filtered_leads fl
+        )
+        SELECT * FROM company_grouped 
+        WHERE row_num <= $${index}
+        ORDER BY company_linkedin_url, row_num
+        LIMIT $${index + 1} OFFSET $${index + 2}
+      `;
+      values.push(perCompany); // Add perCompany value
+      values.push(limit); // Add limit value
+      values.push(offset); // Add offset value
+    } else {
+      // If perCompany is not specified, use the base query with pagination
+      finalQuery = `
+        ${baseQuery}
+        LIMIT $${index} OFFSET $${index + 1}
+      `;
+      values.push(limit); // Add limit value
+      values.push(offset); // Add offset value
+    }
+
+    console.log("finalQuery>", finalQuery);
     console.log("values>", values);
 
-    const { rows } = await pool.query(baseQuery, values);
+    const { rows } = await pool.query(finalQuery, values);
     const totalCount = rows.length > 0 ? parseInt(rows[0].total_count, 10) : 0;
     const perPageCount = rows.length;
 
@@ -498,27 +564,33 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       includetechnology,
       search,
       limit = 1000, // Default limit is 1000
+      perCompany = null, // Parameter to limit records per company
+      funding = null, // Add funding filter
+      foundingYear = null, // Add foundingYear filter (array of years)
     } = req.body;
 
+    console.log("perCompany", perCompany);
     const userId = req.currentUser.id;
     const userEmail = req.currentUser.email;
     const userRole = req.currentUser.roleName;
+
     if (!userId || !userEmail)
       return errorResponse(res, "User information not found", 400);
 
     await client.query("BEGIN");
 
-    let baseQuery = `SELECT * FROM peopleLeads WHERE 1=1`;
+    // Build the WHERE clause with all filters
+    let whereClause = "WHERE 1=1";
     let values = [];
     let index = 1;
 
-    // Add filters dynamically (same logic as before)
+    // Helper functions for case-insensitive include/exclude array filters
     const addIncludeFilter = (field, valueArray) => {
       if (valueArray && valueArray.length > 0) {
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
-        baseQuery += ` AND (${conditions.join(" OR ")})`;
+        whereClause += ` AND (${conditions.join(" OR ")})`;
         values.push(...valueArray);
         index += valueArray.length;
       }
@@ -529,7 +601,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
-        baseQuery += ` AND (${conditions.join(" AND ")})`;
+        whereClause += ` AND (${conditions.join(" AND ")})`;
         values.push(...valueArray);
         index += valueArray.length;
       }
@@ -537,15 +609,15 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
     const addStringFilter = (field, value) => {
       if (value) {
-        baseQuery += ` AND ${field} ILIKE $${index}`;
+        whereClause += ` AND ${field} ILIKE $${index}`;
         values.push(`%${value}%`);
         index++;
       }
     };
 
-    // Apply filters
+    // Add search functionality
     if (search) {
-      baseQuery += ` AND (
+      whereClause += ` AND (
                 company ILIKE $${index} OR 
                 first_name ILIKE $${index} OR 
                 last_name ILIKE $${index} OR 
@@ -557,43 +629,200 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       index++;
     }
 
+    // Handle industry filters
     addIncludeFilter("industry", includeIndustry);
     addExcludeFilter("industry", excludeIndustry);
+
+    // Handle employee count filter - map to num_employees
+    if (includeemployeeCount && includeemployeeCount.length > 0) {
+      const employeeRanges = [];
+
+      for (const range of includeemployeeCount) {
+        const [min, max] = range.split("-").map(Number);
+        if (!isNaN(min) && !isNaN(max)) {
+          whereClause += ` AND (num_employees >= $${index} AND num_employees <= $${
+            index + 1
+          })`;
+          values.push(min, max);
+          index += 2;
+        } else if (!isNaN(min) && range.includes("+")) {
+          whereClause += ` AND num_employees >= $${index}`;
+          values.push(min);
+          index++;
+        } else {
+          // Handle specific values or other formats
+          addStringFilter("num_employees::text", range);
+        }
+      }
+    }
+
+    // Handle revenue filter - map to annual_revenue
+    if (includeRevenue && includeRevenue.length > 0) {
+      const revenueConditions = [];
+      for (const range of includeRevenue) {
+        const [min, max] = range.split("-").map((value) => {
+          if (value.endsWith("M")) {
+            return parseFloat(value) * 1000000;
+          } else if (value.endsWith("B")) {
+            return parseFloat(value) * 1000000000;
+          } else {
+            return parseFloat(value);
+          }
+        });
+
+        if (!isNaN(min) && !isNaN(max)) {
+          revenueConditions.push(
+            `(annual_revenue >= $${index} AND annual_revenue <= $${index + 1})`
+          );
+          values.push(min, max);
+          index += 2;
+        } else if (!isNaN(min) && range.includes("+")) {
+          revenueConditions.push(`(annual_revenue >= $${index})`);
+          values.push(min);
+          index++;
+        }
+      }
+
+      if (revenueConditions.length > 0) {
+        whereClause += ` AND (` + revenueConditions.join(" OR ") + `)`;
+      }
+    }
+
+    // Handle management role filter - map to seniority
+    addIncludeFilter("seniority", includemanagmentRole);
+
+    // Handle company filter
     addIncludeFilter("company", includeCompany);
     addExcludeFilter("company", excludeCompany);
-    addIncludeFilter("seniority", includemanagmentRole);
-    addIncludeFilter("departments", includedepartmentKeyword);
-    addIncludeFilter("country", includePersonalCountry);
-    addExcludeFilter("country", excludePersonalCountry);
-    addIncludeFilter("company_country", includecompanyLocation);
-    addExcludeFilter("company_country", excludeCompanyLocation);
 
-    // Handle job title filters
+    // Handle department keyword filter
+    addIncludeFilter("departments", includedepartmentKeyword);
+
+    // Handle job title filters - map to title
     if (includejobTitles && includejobTitles.length > 0) {
-      baseQuery += ` AND (${includejobTitles
-        .map((_, i) => `title ILIKE $${index + i}`)
-        .join(" OR ")})`;
-      values.push(...includejobTitles.map((title) => `%${title}%`));
+      whereClause += ` AND (`;
+      const titleConditions = includejobTitles.map(
+        (_, i) => `title ILIKE $${index + i}`
+      );
+      whereClause += titleConditions.join(" OR ");
+      whereClause += `)`;
+
+      includejobTitles.forEach((title) => {
+        values.push(`%${title}%`);
+      });
       index += includejobTitles.length;
     }
 
     if (excludeJobTitles && excludeJobTitles.length > 0) {
-      baseQuery += ` AND (${excludeJobTitles
-        .map((_, i) => `title NOT ILIKE $${index + i}`)
-        .join(" AND ")})`;
-      values.push(...excludeJobTitles.map((title) => `%${title}%`));
+      whereClause += ` AND (`;
+      const excludeTitleConditions = excludeJobTitles.map(
+        (_, i) => `title NOT ILIKE $${index + i}`
+      );
+      whereClause += excludeTitleConditions.join(" AND ");
+      whereClause += `)`;
+
+      excludeJobTitles.forEach((title) => {
+        values.push(`%${title}%`);
+      });
       index += excludeJobTitles.length;
     }
 
-    // Add LIMIT to the query
-    baseQuery += ` LIMIT $${index}`;
-    values.push(limit);
-    index++;
+    // Handle technology filter
+    if (includetechnology && includetechnology.length > 0) {
+      whereClause += ` AND (`;
+      const techConditions = includetechnology.map(
+        (_, i) => `technologies ILIKE $${index + i}`
+      );
+      whereClause += techConditions.join(" OR ");
+      whereClause += `)`;
 
-    console.log("baseQuery>", baseQuery);
+      includetechnology.forEach((tech) => {
+        values.push(`%${tech}%`);
+      });
+      index += includetechnology.length;
+    }
+
+    // Handle personal country filters
+    addIncludeFilter("country", includePersonalCountry);
+    addExcludeFilter("country", excludePersonalCountry);
+
+    // Handle company location filters
+    addIncludeFilter("company_country", includecompanyLocation);
+    addExcludeFilter("company_country", excludeCompanyLocation);
+
+    // Handle funding filter
+    if (funding && funding.length > 0) {
+      whereClause += ` AND (`;
+      const fundingConditions = funding.map(
+        (_, i) => `latest_funding ILIKE $${index + i}`
+      );
+      whereClause += fundingConditions.join(" OR ");
+      whereClause += `)`;
+
+      funding.forEach((fund) => {
+        values.push(`%${fund}%`);
+      });
+      index += funding.length;
+    }
+
+    // Handle founding year filter (multiple values)
+    if (foundingYear && foundingYear.length > 0) {
+      whereClause += ` AND (`;
+      const yearConditions = foundingYear.map(
+        (_, i) => `EXTRACT(YEAR FROM last_raised_at) = $${index + i}`
+      );
+      whereClause += yearConditions.join(" OR ");
+      whereClause += `)`;
+
+      foundingYear.forEach((year) => {
+        values.push(year);
+      });
+      index += foundingYear.length;
+    }
+
+    let finalQuery;
+
+    if (perCompany && perCompany > 0) {
+      // If perCompany is specified, use a window function to limit records per company
+      finalQuery = `
+        WITH filtered_leads AS (
+          SELECT pl.*
+          FROM peopleLeads pl
+          ${whereClause}
+        ),
+        limited_leads AS (
+          SELECT * FROM filtered_leads
+          LIMIT $${index}
+        ),
+        company_grouped AS (
+          SELECT 
+            fl.*,
+            ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
+          FROM 
+            limited_leads fl
+        )
+        SELECT * FROM company_grouped 
+        WHERE row_num <= $${index + 1}
+        ORDER BY company_linkedin_url, row_num
+      `;
+      values.push(limit); // Add limit value
+      index++;
+      values.push(perCompany); // Add perCompany value
+    } else {
+      // If perCompany is not specified, use a simpler query
+      finalQuery = `
+        SELECT pl.* 
+        FROM peopleLeads pl
+        ${whereClause}
+        LIMIT $${index}
+      `;
+      values.push(limit); // Add limit value
+    }
+
+    console.log("finalQuery>", finalQuery);
     console.log("values>", values);
 
-    const { rows } = await client.query(baseQuery, values);
+    const { rows } = await client.query(finalQuery, values);
 
     if (rows.length === 0) {
       await client.query("ROLLBACK");
@@ -612,8 +841,17 @@ const exportPeopleLeadsToCSV = async (req, res) => {
     }
 
     // Generate CSV
-    const csvHeader = Object.keys(rows[0]).join(",") + "\n";
-    const csvRows = rows
+    const cleanRows = rows.map((row) => {
+      const cleanRow = { ...row };
+      if ("row_num" in cleanRow) {
+        delete cleanRow.row_num;
+      }
+      return cleanRow;
+    });
+
+    const csvHeader = Object.keys(cleanRows[0]).join(",") + "\n";
+
+    const csvRows = cleanRows
       .map((row) =>
         Object.values(row)
           .map((value) => {
@@ -635,7 +873,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
     const csvData = csvHeader + csvRows;
 
     if (rows.length > 1000) {
-      // If limit is greater than 1000, send the CSV via email
+      // If result is greater than 1000, send the CSV via email
       await sendCSVEmail(userEmail, csvData);
       await client.query("COMMIT");
 
@@ -645,7 +883,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
           userRole !== "admin" ? deductionResult.remainingCredits : "N/A",
       });
     } else {
-      // If limit is 1000 or less, send the CSV as a downloadable response
+      // If result is 1000 or less, send the CSV as a downloadable response
       res.setHeader("Content-Type", "text/csv");
       res.setHeader(
         "Content-Disposition",
@@ -945,6 +1183,8 @@ const getCompanies = async (req, res) => {
       search,
       page = 1,
       limit = 10,
+      funding = null, // Add funding filter
+      foundingYear = null, // Add foundingYear filter (array of years)
     } = req.body;
 
     let baseQuery = `SELECT *, COUNT(*) OVER() AS total_count FROM companies WHERE 1=1`;
@@ -958,9 +1198,7 @@ const getCompanies = async (req, res) => {
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" OR ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
@@ -971,9 +1209,7 @@ const getCompanies = async (req, res) => {
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
         baseQuery += ` AND (${conditions.join(" AND ")})`;
-        valueArray.forEach((val) => {
-          values.push(val);
-        });
+        values.push(...valueArray);
         index += valueArray.length;
       }
     };
@@ -1089,6 +1325,36 @@ const getCompanies = async (req, res) => {
     // Handle company keyword filter
     addStringFilter("company_name", includeCompanyKeyword);
 
+    // Handle funding filter
+    if (funding && funding.length > 0) {
+      baseQuery += ` AND (`;
+      const fundingConditions = funding.map(
+        (_, i) => `latest_funding ILIKE $${index + i}`
+      );
+      baseQuery += fundingConditions.join(" OR ");
+      baseQuery += `)`;
+
+      funding.forEach((fund) => {
+        values.push(`%${fund}%`);
+      });
+      index += funding.length;
+    }
+
+    // Handle founding year filter (multiple values)
+    if (foundingYear && foundingYear.length > 0) {
+      baseQuery += ` AND (`;
+      const yearConditions = foundingYear.map(
+        (_, i) => `founded_year = $${index + i}`
+      );
+      baseQuery += yearConditions.join(" OR ");
+      baseQuery += `)`;
+
+      foundingYear.forEach((year) => {
+        values.push(year);
+      });
+      index += foundingYear.length;
+    }
+
     // Pagination
     const offset = (page - 1) * limit;
     baseQuery += ` ORDER BY id ASC LIMIT $${index++} OFFSET $${index++}`;
@@ -1130,6 +1396,8 @@ const exportCompaniesToCSV = async (req, res) => {
       includeCompanyKeyword,
       search,
       limit = 1000, // Default limit is 1000
+      funding = null, // Add funding filter
+      foundingYear = null, // Add foundingYear filter (array of years)
     } = req.body;
 
     const userId = req.currentUser.id;
@@ -1268,6 +1536,36 @@ const exportCompaniesToCSV = async (req, res) => {
         values.push(`%${tech}%`);
       });
       index += includeTechnology.length;
+    }
+
+    // Handle funding filter
+    if (funding && funding.length > 0) {
+      baseQuery += ` AND (`;
+      const fundingConditions = funding.map(
+        (_, i) => `latest_funding ILIKE $${index + i}`
+      );
+      baseQuery += fundingConditions.join(" OR ");
+      baseQuery += `)`;
+
+      funding.forEach((fund) => {
+        values.push(`%${fund}%`);
+      });
+      index += funding.length;
+    }
+
+    // Handle founding year filter (multiple values)
+    if (foundingYear && foundingYear.length > 0) {
+      baseQuery += ` AND (`;
+      const yearConditions = foundingYear.map(
+        (_, i) => `founded_year = $${index + i}`
+      );
+      baseQuery += yearConditions.join(" OR ");
+      baseQuery += `)`;
+
+      foundingYear.forEach((year) => {
+        values.push(year);
+      });
+      index += foundingYear.length;
     }
 
     // Add LIMIT to the query

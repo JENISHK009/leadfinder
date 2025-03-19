@@ -3,11 +3,29 @@ import { successResponse, errorResponse } from "../utils/index.js";
 import stripe from "../config/stripe.js";
 
 const validatePlanData = (data) => {
-  const { name, description, points, monthly_price, annual_price, duration, features } = data;
+  const {
+    name,
+    description,
+    points,
+    monthly_price,
+    annual_price,
+    duration,
+    features,
+  } = data;
 
-  // Check for required fields
-  if (!name || !points || !monthly_price || !annual_price || !duration) {
-    throw new Error("Missing required fields: name, points, monthly_price, annual_price, duration");
+  if (
+    !name ||
+    points === null ||
+    points === undefined ||
+    monthly_price === null ||
+    monthly_price === undefined ||
+    annual_price === null ||
+    annual_price === undefined ||
+    !duration
+  ) {
+    throw new Error(
+      "Missing required fields: name, points, monthly_price, annual_price, duration"
+    );
   }
 
   // Validate points
@@ -16,12 +34,12 @@ const validatePlanData = (data) => {
   }
 
   // Validate monthly_price
-  if (typeof monthly_price !== "number" || monthly_price <= 0) {
+  if (typeof monthly_price !== "number") {
     throw new Error("Monthly price must be a positive number");
   }
 
   // Validate annual_price
-  if (typeof annual_price !== "number" || annual_price <= 0) {
+  if (typeof annual_price !== "number") {
     throw new Error("Annual price must be a positive number");
   }
 
@@ -33,7 +51,15 @@ const validatePlanData = (data) => {
 
 const createPlan = async (req, res) => {
   try {
-    const { name, description, points, monthly_price, annual_price, duration, features } = req.body;
+    const {
+      name,
+      description,
+      points,
+      monthly_price,
+      annual_price,
+      duration,
+      features,
+    } = req.body;
 
     // Validate the plan data
     validatePlanData(req.body);
@@ -45,7 +71,15 @@ const createPlan = async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO subscription_plans (name, description, points, monthly_price, annual_price, duration, features)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [name, description, points, monthly_price, annual_price, duration, featuresJson]
+      [
+        name,
+        description,
+        points,
+        monthly_price,
+        annual_price,
+        duration,
+        featuresJson,
+      ]
     );
 
     return successResponse(res, {
@@ -100,7 +134,16 @@ const getPlanById = async (req, res) => {
 
 const updatePlan = async (req, res) => {
   try {
-    const { id, name, description, points, monthly_price, annual_price, duration, features } = req.body;
+    const {
+      id,
+      name,
+      description,
+      points,
+      monthly_price,
+      annual_price,
+      duration,
+      features,
+    } = req.body;
 
     if (!id) {
       throw new Error("Plan ID is required");
@@ -211,7 +254,9 @@ const buySubscriptionPlan = async (req, res) => {
 
     // Validate the type
     if (type !== "monthly" && type !== "yearly" && type !== "extra_credits") {
-      throw new Error("Type must be either 'monthly', 'yearly', or 'extra_credits'");
+      throw new Error(
+        "Type must be either 'monthly', 'yearly', or 'extra_credits'"
+      );
     }
 
     // Fetch the plan details from the database

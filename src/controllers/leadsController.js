@@ -10,6 +10,7 @@ import {
 import pkg from "pg-copy-streams";
 const { from } = pkg;
 import { deductCredits } from "../servies/userService.js";
+import { uploadFileToS3 } from "../utils/index.js";
 
 const cleanPhoneNumber = (phone) => {
   if (!phone) return null;
@@ -285,11 +286,16 @@ const getPeopleLeads = async (req, res) => {
       page = 1,
       limit = 10,
       perCompany = null,
-      funding = null, // Add funding filter
+      funding = null,
       foundingYear = null, // Add foundingYear filter (array of years)
     } = req.body;
 
-    let baseQuery = `SELECT *, COUNT(*) OVER() AS total_count FROM peopleLeads WHERE 1=1`;
+    let baseQuery = `
+      SELECT pl.*, COUNT(*) OVER() AS total_count 
+      FROM peopleLeads pl
+      LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
+      WHERE 1=1
+    `;
     let values = [];
     let index = 1;
 
@@ -327,38 +333,36 @@ const getPeopleLeads = async (req, res) => {
     // Add search functionality
     if (search) {
       baseQuery += ` AND (
-                company ILIKE $${index} OR 
-                first_name ILIKE $${index} OR 
-                last_name ILIKE $${index} OR 
-                email ILIKE $${index} OR
-                title ILIKE $${index} OR
-                industry ILIKE $${index}
+                pl.company ILIKE $${index} OR 
+                pl.first_name ILIKE $${index} OR 
+                pl.last_name ILIKE $${index} OR 
+                pl.email ILIKE $${index} OR
+                pl.title ILIKE $${index} OR
+                pl.industry ILIKE $${index}
             )`;
       values.push(`%${search}%`);
       index++;
     }
 
     // Handle industry filters
-    addIncludeFilter("industry", includeIndustry);
-    addExcludeFilter("industry", excludeIndustry);
+    addIncludeFilter("pl.industry", includeIndustry);
+    addExcludeFilter("pl.industry", excludeIndustry);
 
     // Handle employee count filter - map to num_employees
     if (includeemployeeCount && includeemployeeCount.length > 0) {
       for (const range of includeemployeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${
-            index + 1
-          })`;
+          baseQuery += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${index + 1})`;
           values.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
-          baseQuery += ` AND num_employees >= $${index}`;
+          baseQuery += ` AND pl.num_employees >= $${index}`;
           values.push(min);
           index++;
         } else {
           // Handle specific values or other formats
-          addStringFilter("num_employees::text", range);
+          addStringFilter("pl.num_employees::text", range);
         }
       }
     }
@@ -379,12 +383,12 @@ const getPeopleLeads = async (req, res) => {
 
         if (!isNaN(min) && !isNaN(max)) {
           revenueConditions.push(
-            `(annual_revenue >= $${index} AND annual_revenue <= $${index + 1})`
+            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${index + 1})`
           );
           values.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
-          revenueConditions.push(`(annual_revenue >= $${index})`);
+          revenueConditions.push(`(pl.annual_revenue >= $${index})`);
           values.push(min);
           index++;
         }
@@ -396,20 +400,20 @@ const getPeopleLeads = async (req, res) => {
     }
 
     // Handle management role filter - map to seniority
-    addIncludeFilter("seniority", includemanagmentRole);
+    addIncludeFilter("pl.seniority", includemanagmentRole);
 
     // Handle company filter
-    addIncludeFilter("company", includeCompany);
-    addExcludeFilter("company", excludeCompany);
+    addIncludeFilter("pl.company", includeCompany);
+    addExcludeFilter("pl.company", excludeCompany);
 
     // Handle department keyword filter
-    addIncludeFilter("departments", includedepartmentKeyword);
+    addIncludeFilter("pl.departments", includedepartmentKeyword);
 
     // Handle job title filters - map to title
     if (includejobTitles && includejobTitles.length > 0) {
       baseQuery += ` AND (`;
       const titleConditions = includejobTitles.map(
-        (_, i) => `title ILIKE $${index + i}`
+        (_, i) => `pl.title ILIKE $${index + i}`
       );
       baseQuery += titleConditions.join(" OR ");
       baseQuery += `)`;
@@ -423,7 +427,7 @@ const getPeopleLeads = async (req, res) => {
     if (excludeJobTitles && excludeJobTitles.length > 0) {
       baseQuery += ` AND (`;
       const excludeTitleConditions = excludeJobTitles.map(
-        (_, i) => `title NOT ILIKE $${index + i}`
+        (_, i) => `pl.title NOT ILIKE $${index + i}`
       );
       baseQuery += excludeTitleConditions.join(" AND ");
       baseQuery += `)`;
@@ -438,7 +442,7 @@ const getPeopleLeads = async (req, res) => {
     if (includetechnology && includetechnology.length > 0) {
       baseQuery += ` AND (`;
       const techConditions = includetechnology.map(
-        (_, i) => `technologies ILIKE $${index + i}`
+        (_, i) => `pl.technologies ILIKE $${index + i}`
       );
       baseQuery += techConditions.join(" OR ");
       baseQuery += `)`;
@@ -450,18 +454,18 @@ const getPeopleLeads = async (req, res) => {
     }
 
     // Handle personal country filters
-    addIncludeFilter("country", includePersonalCountry);
-    addExcludeFilter("country", excludePersonalCountry);
+    addIncludeFilter("pl.country", includePersonalCountry);
+    addExcludeFilter("pl.country", excludePersonalCountry);
 
     // Handle company location filters
-    addIncludeFilter("company_country", includecompanyLocation);
-    addExcludeFilter("company_country", excludeCompanyLocation);
+    addIncludeFilter("pl.company_country", includecompanyLocation);
+    addExcludeFilter("pl.company_country", excludeCompanyLocation);
 
     // Handle funding filter
     if (funding && funding.length > 0) {
       baseQuery += ` AND (`;
       const fundingConditions = funding.map(
-        (_, i) => `latest_funding ILIKE $${index + i}`
+        (_, i) => `pl.latest_funding ILIKE $${index + i}`
       );
       baseQuery += fundingConditions.join(" OR ");
       baseQuery += `)`;
@@ -476,7 +480,7 @@ const getPeopleLeads = async (req, res) => {
     if (foundingYear && foundingYear.length > 0) {
       baseQuery += ` AND (`;
       const yearConditions = foundingYear.map(
-        (_, i) => `EXTRACT(YEAR FROM last_raised_at) = $${index + i}`
+        (_, i) => `c.founded_year = $${index + i}`
       );
       baseQuery += yearConditions.join(" OR ");
       baseQuery += `)`;
@@ -872,8 +876,57 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
     const csvData = csvHeader + csvRows;
 
+    // Upload CSV to S3
+    const fileName = `people_leads_export_${Date.now()}.csv`;
+    const bucketName = process.env.S3_BUCKET_NAME;
+    const { fileUrl } = await uploadFileToS3(
+      Buffer.from(csvData, "utf-8"),
+      fileName,
+      bucketName
+    );
+
+    // Prepare filters object
+    const filters = {
+      includeIndustry,
+      excludeIndustry,
+      includeemployeeCount,
+      includeRevenue,
+      includemanagmentRole,
+      includeCompany,
+      excludeCompany,
+      includedepartmentKeyword,
+      includePersonalCountry,
+      excludePersonalCountry,
+      includecompanyLocation,
+      excludeCompanyLocation,
+      includejobTitles,
+      excludeJobTitles,
+      includetechnology,
+      search,
+      limit,
+      perCompany,
+      funding,
+      foundingYear,
+    };
+
+    // Insert into exported_files with filters
+    const insertQuery = `
+      INSERT INTO exported_files (user_id, type, export_row_count, file_name, file_url, filters)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id;
+    `;
+    const insertValues = [
+      userId,
+      "leads",
+      rows.length,
+      fileName,
+      fileUrl,
+      filters,
+    ];
+    await client.query(insertQuery, insertValues);
+
     if (rows.length > 1000) {
-      // If result is greater than 1000, send the CSV via email
+      // Send CSV via email
       await sendCSVEmail(userEmail, csvData);
       await client.query("COMMIT");
 
@@ -883,15 +936,14 @@ const exportPeopleLeadsToCSV = async (req, res) => {
           userRole !== "admin" ? deductionResult.remainingCredits : "N/A",
       });
     } else {
-      // If result is 1000 or less, send the CSV as a downloadable response
+      // Send CSV as downloadable response
       res.setHeader("Content-Type", "text/csv");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="people_leads_export.csv"`
+        `attachment; filename="${fileName}"`
       );
 
       await client.query("COMMIT");
-
       return res.send(csvData);
     }
   } catch (error) {
@@ -1619,6 +1671,42 @@ const exportCompaniesToCSV = async (req, res) => {
 
     const csvData = csvHeader + csvRows;
 
+    // Upload CSV to S3
+    const fileName = `companies_export_${Date.now()}.csv`;
+    const bucketName = process.env.S3_BUCKET_NAME; // Add your bucket name to environment variables
+    const { fileUrl } = await uploadFileToS3(
+      Buffer.from(csvData, "utf-8"),
+      fileName,
+      bucketName
+    );
+
+    // Prepare filters object
+    const filters = {
+      employeeCount,
+      companyRevenue,
+      includeCompanyLocation,
+      excludeCompanyLocation,
+      includeIndustry,
+      excludeIndustry,
+      includeCompany,
+      excludeCompany,
+      includeTechnology,
+      includeCompanyKeyword,
+      search,
+      limit,
+      funding,
+      foundingYear,
+    };
+
+    // Insert into exported_files table
+    const insertQuery = `
+      INSERT INTO exported_files (user_id, type, export_row_count, file_name, file_url, filters)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id;
+    `;
+    const insertValues = [userId, "company", rows.length, fileName, fileUrl, filters];
+    await client.query(insertQuery, insertValues);
+
     if (rows.length > 1000) {
       // If limit is greater than 1000, send the CSV via email
       await sendCSVEmail(userEmail, csvData);
@@ -1635,7 +1723,7 @@ const exportCompaniesToCSV = async (req, res) => {
       res.setHeader("Content-Type", "text/csv");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="companies_export.csv"`
+        `attachment; filename="${fileName}"`
       );
 
       await client.query("COMMIT");
@@ -1866,6 +1954,217 @@ const getPeopleLeadsDepartmentChartData = async (req, res) => {
   }
 };
 
+const getExportedFiles = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { type, page = 1, limit = 10 } = req.query;
+    const userId = req.currentUser.id; // Get userId from the authenticated user
+
+    if (!userId) {
+      return errorResponse(res, "User ID is required", 400);
+    }
+
+    // Calculate offset for pagination
+    const offset = (page - 1) * limit;
+
+    // Build the base query
+    let query = `
+      SELECT *
+      FROM exported_files
+      WHERE user_id = $1
+    `;
+    const queryParams = [userId];
+
+    // Add type filter if provided
+    if (type) {
+      query += ` AND type = $${queryParams.length + 1}`;
+      queryParams.push(type);
+    }
+
+    // Add pagination
+    query += `
+      ORDER BY export_date DESC
+      LIMIT $${queryParams.length + 1}
+      OFFSET $${queryParams.length + 2}
+    `;
+    queryParams.push(limit, offset);
+
+    // Execute the query
+    const { rows } = await client.query(query, queryParams);
+
+    // Get total count for pagination metadata
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM exported_files
+      WHERE user_id = $1
+    `;
+    const countParams = [userId];
+
+    if (type) {
+      countQuery += ` AND type = $${countParams.length + 1}`;
+      countParams.push(type);
+    }
+
+    const countResult = await client.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    // Prepare response
+    const response = {
+      data: rows,
+      pagination: {
+        total,
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+
+    return successResponse(res, response);
+  } catch (error) {
+    console.error("Error fetching exported files:", error);
+    return errorResponse(res, "Error fetching exported files", 500);
+  } finally {
+    client.release();
+  }
+};
+
+const saveLeads = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const userId = req.currentUser.id; // Get userId from the authenticated user
+    const { leads, type } = req.body; // Array of leads to save
+
+    if (!userId) {
+      return errorResponse(res, "User ID is required", 400);
+    }
+
+    if (!Array.isArray(leads)) {
+      return errorResponse(
+        res,
+        "Invalid input: expected an array of leads",
+        400
+      );
+    }
+
+    await client.query("BEGIN");
+
+    // Save or update each lead
+    for (const lead of leads) {
+      const { leadId, email, mobile } = lead;
+
+      if (!leadId || !type) {
+        await client.query("ROLLBACK");
+        return errorResponse(
+          res,
+          "leadId and type are required for each lead",
+          400
+        );
+      }
+
+      const insertQuery = `
+        INSERT INTO saved_leads (user_id, lead_id, type, email, mobile)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_id, lead_id, type) 
+        DO UPDATE SET 
+          email = EXCLUDED.email,
+          mobile = EXCLUDED.mobile
+      `;
+      const insertValues = [
+        userId,
+        leadId,
+        type,
+        email || false,
+        mobile || false,
+      ];
+      await client.query(insertQuery, insertValues);
+    }
+
+    await client.query("COMMIT");
+    return successResponse(res, { message: "Leads saved successfully" });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error saving leads:", error);
+    return errorResponse(res, "Error saving leads", 500);
+  } finally {
+    client.release();
+  }
+};
+
+const getSavedLeads = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { type, page = 1, limit = 10 } = req.query;
+    const userId = req.currentUser.id; // Get userId from the authenticated user
+
+    if (!userId) {
+      return errorResponse(res, "User ID is required", 400);
+    }
+
+    const offset = (page - 1) * limit;
+
+    let query = `
+      SELECT sl.id AS saved_lead_id, sl.type, sl.email as "isEmail", sl.mobile as "isMobile", sl.saved_at,
+             l.* -- Select all columns from the leads table
+      FROM saved_leads sl
+      INNER JOIN peopleLeads l ON sl.lead_id = l.id
+      WHERE sl.user_id = $1
+    `;
+    const queryParams = [userId];
+
+    if (type) {
+      query += ` AND sl.type = $${queryParams.length + 1}`;
+      queryParams.push(type);
+    }
+
+    query += `
+      ORDER BY sl.saved_at DESC
+      LIMIT $${queryParams.length + 1}
+      OFFSET $${queryParams.length + 2}
+    `;
+    queryParams.push(limit, offset);
+
+    // Execute the query
+    const { rows } = await client.query(query, queryParams);
+
+    // Get total count for pagination metadata
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM saved_leads sl
+      WHERE sl.user_id = $1
+    `;
+    const countParams = [userId];
+
+    if (type) {
+      countQuery += ` AND sl.type = $${countParams.length + 1}`;
+      countParams.push(type);
+    }
+
+    const countResult = await client.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    // Prepare response
+    const response = {
+      data: rows,
+      pagination: {
+        total,
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+
+    return successResponse(res, response);
+  } catch (error) {
+    console.error("Error fetching saved leads:", error);
+    return errorResponse(res, "Error fetching saved leads", 500);
+  } finally {
+    client.release();
+  }
+};
+
 export {
   addPeopleLeadsData,
   getPeopleLeads,
@@ -1878,4 +2177,7 @@ export {
   editCompanyLeadData,
   getCompanyChartData,
   getPeopleLeadsDepartmentChartData,
+  getExportedFiles,
+  saveLeads,
+  getSavedLeads,
 };

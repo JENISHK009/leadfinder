@@ -24,6 +24,12 @@ router.put("/editPeopleLeadsData", leadsController.editPeopleLeadsData);
 router.put("/editCompanyLeadData", leadsController.editCompanyLeadData);
 router.get("/getCompanyChartData", leadsController.getCompanyChartData);
 router.get("/getPeopleLeadsDepartmentChartData", leadsController.getPeopleLeadsDepartmentChartData);
+router.get("/getExportedFiles", leadsController.getExportedFiles);
+router.post("/saveLeads", leadsController.saveLeads);
+router.get("/getSavedLeads", leadsController.getSavedLeads);
+
+
+
 
 
 export default router;

@@ -353,7 +353,9 @@ const getPeopleLeads = async (req, res) => {
       for (const range of includeemployeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${index + 1})`;
+          baseQuery += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${
+            index + 1
+          })`;
           values.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
@@ -383,7 +385,9 @@ const getPeopleLeads = async (req, res) => {
 
         if (!isNaN(min) && !isNaN(max)) {
           revenueConditions.push(
-            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${index + 1})`
+            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${
+              index + 1
+            })`
           );
           values.push(min, max);
           index += 2;
@@ -1704,7 +1708,14 @@ const exportCompaniesToCSV = async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id;
     `;
-    const insertValues = [userId, "company", rows.length, fileName, fileUrl, filters];
+    const insertValues = [
+      userId,
+      "company",
+      rows.length,
+      fileName,
+      fileUrl,
+      filters,
+    ];
     await client.query(insertQuery, insertValues);
 
     if (rows.length > 1000) {
@@ -2165,6 +2176,414 @@ const getSavedLeads = async (req, res) => {
   }
 };
 
+const getselectedLeads = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { type, filters, rowSelection, percomponyContact } = req.body; // New parameters: rowSelection and percomponyContact
+
+    if (!type || (type !== 'people' && type !== 'company')) {
+      return errorResponse(res, "Invalid type provided. Type must be 'people' or 'company'", 400);
+    }
+
+    await client.query("BEGIN");
+
+    let tableName;
+    if (type === 'people') {
+      tableName = 'peopleLeads';
+    } else if (type === 'company') {
+      tableName = 'companies';
+    }
+
+    // Build the WHERE clause with all filters
+    let whereClause = "WHERE 1=1";
+    let values = [];
+    let index = 1;
+
+    // Helper functions for case-insensitive include/exclude array filters
+    const addIncludeFilter = (field, valueArray) => {
+      if (valueArray && valueArray.length > 0) {
+        const conditions = valueArray.map(
+          (_, i) => `LOWER(${field}) = LOWER($${index + i})`
+        );
+        whereClause += ` AND (${conditions.join(" OR ")})`;
+        values.push(...valueArray);
+        index += valueArray.length;
+      }
+    };
+
+    const addExcludeFilter = (field, valueArray) => {
+      if (valueArray && valueArray.length > 0) {
+        const conditions = valueArray.map(
+          (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
+        );
+        whereClause += ` AND (${conditions.join(" AND ")})`;
+        values.push(...valueArray);
+        index += valueArray.length;
+      }
+    };
+
+    const addStringFilter = (field, value) => {
+      if (value) {
+        whereClause += ` AND ${field} ILIKE $${index}`;
+        values.push(`%${value}%`);
+        index++;
+      }
+    };
+
+    // Apply filters based on type
+    if (type === 'people') {
+      const {
+        includeIndustry,
+        excludeIndustry,
+        includeemployeeCount,
+        includeRevenue,
+        includemanagmentRole,
+        includeCompany,
+        excludeCompany,
+        includedepartmentKeyword,
+        includePersonalCountry,
+        excludePersonalCountry,
+        includecompanyLocation,
+        excludeCompanyLocation,
+        includejobTitles,
+        excludeJobTitles,
+        includetechnology,
+        search,
+        funding,
+        foundingYear,
+      } = filters;
+
+      // Add search functionality
+      if (search) {
+        whereClause += ` AND (
+          company ILIKE $${index} OR 
+          first_name ILIKE $${index} OR 
+          last_name ILIKE $${index} OR 
+          email ILIKE $${index} OR
+          title ILIKE $${index} OR
+          industry ILIKE $${index}
+        )`;
+        values.push(`%${search}%`);
+        index++;
+      }
+
+      // Handle industry filters
+      addIncludeFilter("industry", includeIndustry);
+      addExcludeFilter("industry", excludeIndustry);
+
+      // Handle employee count filter
+      if (includeemployeeCount && includeemployeeCount.length > 0) {
+        for (const range of includeemployeeCount) {
+          const [min, max] = range.split("-").map(Number);
+          if (!isNaN(min) && !isNaN(max)) {
+            whereClause += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1})`;
+            values.push(min, max);
+            index += 2;
+          } else if (!isNaN(min) && range.includes("+")) {
+            whereClause += ` AND num_employees >= $${index}`;
+            values.push(min);
+            index++;
+          }
+        }
+      }
+
+      // Handle revenue filter
+      if (includeRevenue && includeRevenue.length > 0) {
+        const revenueConditions = [];
+        for (const range of includeRevenue) {
+          const [min, max] = range.split("-").map((value) => {
+            if (value.endsWith("M")) {
+              return parseFloat(value) * 1000000;
+            } else if (value.endsWith("B")) {
+              return parseFloat(value) * 1000000000;
+            } else {
+              return parseFloat(value);
+            }
+          });
+
+          if (!isNaN(min) && !isNaN(max)) {
+            revenueConditions.push(
+              `(annual_revenue >= $${index} AND annual_revenue <= $${index + 1})`
+            );
+            values.push(min, max);
+            index += 2;
+          } else if (!isNaN(min) && range.includes("+")) {
+            revenueConditions.push(`(annual_revenue >= $${index})`);
+            values.push(min);
+            index++;
+          }
+        }
+
+        if (revenueConditions.length > 0) {
+          whereClause += ` AND (` + revenueConditions.join(" OR ") + `)`;
+        }
+      }
+
+      // Handle management role filter
+      addIncludeFilter("seniority", includemanagmentRole);
+
+      // Handle company filter
+      addIncludeFilter("company", includeCompany);
+      addExcludeFilter("company", excludeCompany);
+
+      // Handle department keyword filter
+      addIncludeFilter("departments", includedepartmentKeyword);
+
+      // Handle job title filters
+      if (includejobTitles && includejobTitles.length > 0) {
+        whereClause += ` AND (`;
+        const titleConditions = includejobTitles.map(
+          (_, i) => `title ILIKE $${index + i}`
+        );
+        whereClause += titleConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...includejobTitles.map(title => `%${title}%`));
+        index += includejobTitles.length;
+      }
+
+      if (excludeJobTitles && excludeJobTitles.length > 0) {
+        whereClause += ` AND (`;
+        const excludeTitleConditions = excludeJobTitles.map(
+          (_, i) => `title NOT ILIKE $${index + i}`
+        );
+        whereClause += excludeTitleConditions.join(" AND ");
+        whereClause += `)`;
+        values.push(...excludeJobTitles.map(title => `%${title}%`));
+        index += excludeJobTitles.length;
+      }
+
+      // Handle technology filter
+      if (includetechnology && includetechnology.length > 0) {
+        whereClause += ` AND (`;
+        const techConditions = includetechnology.map(
+          (_, i) => `technologies ILIKE $${index + i}`
+        );
+        whereClause += techConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...includetechnology.map(tech => `%${tech}%`));
+        index += includetechnology.length;
+      }
+
+      // Handle personal country filters
+      addIncludeFilter("country", includePersonalCountry);
+      addExcludeFilter("country", excludePersonalCountry);
+
+      // Handle company location filters
+      addIncludeFilter("company_country", includecompanyLocation);
+      addExcludeFilter("company_country", excludeCompanyLocation);
+
+      // Handle funding filter
+      if (funding && funding.length > 0) {
+        whereClause += ` AND (`;
+        const fundingConditions = funding.map(
+          (_, i) => `latest_funding ILIKE $${index + i}`
+        );
+        whereClause += fundingConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...funding.map(fund => `%${fund}%`));
+        index += funding.length;
+      }
+
+      // Handle founding year filter
+      if (foundingYear && foundingYear.length > 0) {
+        whereClause += ` AND (`;
+        const yearConditions = foundingYear.map(
+          (_, i) => `EXTRACT(YEAR FROM last_raised_at) = $${index + i}`
+        );
+        whereClause += yearConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...foundingYear);
+        index += foundingYear.length;
+      }
+    } else if (type === 'company') {
+      const {
+        employeeCount,
+        companyRevenue,
+        includeCompanyLocation,
+        excludeCompanyLocation,
+        includeIndustry,
+        excludeIndustry,
+        includeCompany,
+        excludeCompany,
+        includeTechnology,
+        includeCompanyKeyword,
+        search,
+        funding,
+        foundingYear,
+      } = filters;
+
+      // Add search functionality
+      if (search) {
+        whereClause += ` AND (
+          company_name ILIKE $${index} OR 
+          industry ILIKE $${index} OR 
+          company_address ILIKE $${index} OR 
+          company_phone ILIKE $${index} OR
+          seo_description ILIKE $${index} OR
+          technologies ILIKE $${index}
+        )`;
+        values.push(`%${search}%`);
+        index++;
+      }
+
+      // Handle employee count filter
+      if (employeeCount && employeeCount.length > 0) {
+        for (const range of employeeCount) {
+          const [min, max] = range.split("-").map(Number);
+          if (!isNaN(min) && !isNaN(max)) {
+            whereClause += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1})`;
+            values.push(min, max);
+            index += 2;
+          } else if (!isNaN(min) && range.includes("+")) {
+            whereClause += ` AND num_employees >= $${index}`;
+            values.push(min);
+            index++;
+          }
+        }
+      }
+
+      // Handle company revenue filter
+      if (companyRevenue && companyRevenue.length > 0) {
+        const revenueConditions = [];
+        for (const range of companyRevenue) {
+          const [min, max] = range.split("-").map((value) => {
+            if (value.endsWith("M")) {
+              return parseFloat(value) * 1000000;
+            } else if (value.endsWith("B")) {
+              return parseFloat(value) * 1000000000;
+            } else {
+              return parseFloat(value);
+            }
+          });
+
+          if (!isNaN(min) && !isNaN(max)) {
+            revenueConditions.push(
+              `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${index + 1})`
+            );
+            values.push(min, max);
+            index += 2;
+          } else if (!isNaN(min) && range.includes("+")) {
+            revenueConditions.push(
+              `(CAST(annual_revenue AS NUMERIC) >= $${index})`
+            );
+            values.push(min);
+            index++;
+          }
+        }
+
+        if (revenueConditions.length > 0) {
+          whereClause += ` AND (` + revenueConditions.join(" OR ") + `)`;
+        }
+      }
+
+      // Handle company location filters
+      addIncludeFilter("company_country", includeCompanyLocation);
+      addExcludeFilter("company_country", excludeCompanyLocation);
+
+      // Handle industry filters
+      addIncludeFilter("industry", includeIndustry);
+      addExcludeFilter("industry", excludeIndustry);
+
+      // Handle company name filters
+      addIncludeFilter("company_name", includeCompany);
+      addExcludeFilter("company_name", excludeCompany);
+
+      // Handle company keyword filter
+      addStringFilter("company_name", includeCompanyKeyword);
+
+      // Handle technology filters
+      if (includeTechnology && includeTechnology.length > 0) {
+        whereClause += ` AND (`;
+        const techConditions = includeTechnology.map(
+          (_, i) => `technologies ILIKE $${index + i}`
+        );
+        whereClause += techConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...includeTechnology.map(tech => `%${tech}%`));
+        index += includeTechnology.length;
+      }
+
+      // Handle funding filter
+      if (funding && funding.length > 0) {
+        whereClause += ` AND (`;
+        const fundingConditions = funding.map(
+          (_, i) => `latest_funding ILIKE $${index + i}`
+        );
+        whereClause += fundingConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...funding.map(fund => `%${fund}%`));
+        index += funding.length;
+      }
+
+      // Handle founding year filter
+      if (foundingYear && foundingYear.length > 0) {
+        whereClause += ` AND (`;
+        const yearConditions = foundingYear.map(
+          (_, i) => `founded_year = $${index + i}`
+        );
+        whereClause += yearConditions.join(" OR ");
+        whereClause += `)`;
+        values.push(...foundingYear);
+        index += foundingYear.length;
+      }
+    }
+
+    // Apply percomponyContact only for people leads
+    let finalQuery;
+    if (type === 'people' && percomponyContact && percomponyContact > 0) {
+      finalQuery = `
+        WITH filtered_leads AS (
+          SELECT pl.*
+          FROM peopleLeads pl
+          ${whereClause}
+        ),
+        company_grouped AS (
+          SELECT 
+            fl.*,
+            ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
+          FROM 
+            filtered_leads fl
+        )
+        SELECT id FROM company_grouped 
+        WHERE row_num <= $${index}
+        ORDER BY company_linkedin_url, row_num
+      `;
+      values.push(percomponyContact); // Add percomponyContact value
+    } else {
+      // For company leads or when percomponyContact is not applicable
+      finalQuery = `
+        SELECT id 
+        FROM ${tableName}
+        ${whereClause}
+        LIMIT $${index}
+      `;
+      values.push(rowSelection); // Add rowSelection value
+    }
+
+    const { rows } = await client.query(finalQuery, values);
+
+    if (rows.length === 0) {
+      await client.query("ROLLBACK");
+      return errorResponse(res, "No leads found with the provided filters", 404);
+    }
+
+    await client.query("COMMIT");
+
+    // Extract IDs from the result
+    const leadIds = rows.map(row => row.id);
+
+    return successResponse(res, { leadIds });
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error fetching selected leads:", error);
+    return errorResponse(res, "Error fetching selected leads", 500);
+  } finally {
+    client.release();
+  }
+};
+
 export {
   addPeopleLeadsData,
   getPeopleLeads,
@@ -2180,4 +2599,5 @@ export {
   getExportedFiles,
   saveLeads,
   getSavedLeads,
+  getselectedLeads,
 };

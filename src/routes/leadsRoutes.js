@@ -27,11 +27,7 @@ router.get("/getPeopleLeadsDepartmentChartData", leadsController.getPeopleLeadsD
 router.get("/getExportedFiles", leadsController.getExportedFiles);
 router.post("/saveLeads", leadsController.saveLeads);
 router.get("/getSavedLeads", leadsController.getSavedLeads);
-router.get("/getselectedLeads", leadsController.getselectedLeads);
-
-
-
-
+router.post("/getselectedLeads", leadsController.getselectedLeads);
 
 
 export default router;

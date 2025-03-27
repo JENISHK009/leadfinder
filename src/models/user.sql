@@ -2,8 +2,8 @@ CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
-    mobile_number VARCHAR(20) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL,
+    mobile_number VARCHAR(20) UNIQUE,
+    password VARCHAR(255),
     credits INT DEFAULT 0, 
     role_id INT NOT NULL DEFAULT 2,  -- Default role_id for 'user' (ensure 'user' role has id=2)
     otp VARCHAR(6),  -- OTP column added
@@ -34,3 +34,5 @@ CREATE TRIGGER update_user_timestamp
   BEFORE UPDATE ON users
   FOR EACH ROW
   EXECUTE FUNCTION update_timestamp();
+
+  ALTER TABLE public.users ADD COLUMN google_id VARCHAR(255);

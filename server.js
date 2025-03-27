@@ -2,28 +2,65 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
+import session from "express-session";
+import passport from "passport";
+
 import pool from "./src/config/db.js";
+dotenv.config();
+
+// Middleware
 import {
   encryptionMiddleware,
   authenticateUser,
 } from "./src/middleware/index.js";
+
+// Routes
 import {
   authRoutes,
+  googleAuthRoutes,
   leadsRoutes,
   plansRoutes,
   webhookRoutes,
   userRoutes,
 } from "./src/routes/index.js";
 
-dotenv.config();
+// Passport Google Config
+import { configurePassportGoogle } from "./src/utils/passportGoogleConfig.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
+// ======================
+// Middleware Setup
+// ======================
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL,
+    credentials: true,
+  })
+);
 
-// Apply express.raw() middleware ONLY for the webhook route
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: false, // Set to true in production with HTTPS
+      maxAge: 24 * 60 * 60 * 1000, // 1 day
+    },
+  })
+);
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Configure Passport Google Strategy
+configurePassportGoogle();
+
+// ======================
+// Routes Setup
+// ======================
 app.use(
   "/api/webhook",
   express.raw({ type: "application/json" }),
@@ -36,15 +73,10 @@ app.use(bodyParser.json());
 // Encryption middleware
 app.use(encryptionMiddleware);
 
-// Routes
+// Public Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/auth", googleAuthRoutes); // Google auth routes
 
-// Test route
-app.get("/api/test", (req, res) => {
-  res.json({ message: "Server is running!" });
-});
-
-// Authenticate user middleware
 app.use(authenticateUser);
 
 // Protected routes
@@ -52,7 +84,6 @@ app.use("/api/leads", leadsRoutes);
 app.use("/api/plans", plansRoutes);
 app.use("/api/users", userRoutes);
 
-// Connect to the database and start the server
 pool
   .connect()
   .then(() => {

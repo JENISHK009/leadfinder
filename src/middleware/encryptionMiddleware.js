@@ -22,8 +22,11 @@ export const decryptData = (encryptedData) => {
 
 export const encryptionMiddleware = (req, res, next) => {
   try {
+    console.log("req.body?.data", req.body?.data);
+    console.log("req.query?.data", req.query?.data);
     if (req.body?.data) {
       const decryptedBody = decryptData(req.body.data);
+      console.log("decryptedBody", decryptedBody);
       if (!decryptedBody)
         return res
           .status(400)

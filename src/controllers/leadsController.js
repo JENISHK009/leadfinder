@@ -1924,7 +1924,7 @@ const getSavedLeads = async (req, res) => {
 
   try {
     const { type, page = 1, limit = 10 } = req.query;
-    const userId = req.currentUser.id; // Get userId from the authenticated user
+    const userId = req.currentUser.id;
 
     if (!userId) {
       return errorResponse(res, "User ID is required", 400);
@@ -1932,11 +1932,20 @@ const getSavedLeads = async (req, res) => {
 
     const offset = (page - 1) * limit;
 
+    // Determine which table to join based on type
+    const joinTable = type === 'company' ? 'companies' : 'peopleLeads';
+    const tableAlias = type === 'company' ? 'c' : 'l';
+
     let query = `
-      SELECT sl.id AS saved_lead_id, sl.type, sl.email as "isEmail", sl.mobile as "isMobile", sl.saved_at,
-             l.* -- Select all columns from the leads table
+      SELECT 
+        sl.id AS saved_lead_id, 
+        sl.type, 
+        sl.email as "isEmail", 
+        sl.mobile as "isMobile", 
+        sl.saved_at,
+        ${tableAlias}.* -- Select all columns from the appropriate table
       FROM saved_leads sl
-      INNER JOIN peopleLeads l ON sl.lead_id = l.id
+      INNER JOIN ${joinTable} ${tableAlias} ON sl.lead_id = ${tableAlias}.id
       WHERE sl.user_id = $1
     `;
     const queryParams = [userId];

@@ -6,13 +6,11 @@ CREATE TABLE IF NOT EXISTS exported_files (
     file_name VARCHAR(255) NOT NULL, -- Name of the exported file
     file_url TEXT NOT NULL, -- URL of the file in S3
     filters JSONB, -- Store filters as JSONB (optional, can be NULL)
-    export_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp of the export
-    CONSTRAINT fk_user
-        FOREIGN KEY (user_id)
-        REFERENCES users(id) -- Assuming you have a `users` table
+    export_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp of the export
 );
 
-CREATE INDEX idx_user_id ON exported_files (user_id);
-CREATE INDEX idx_export_date ON exported_files (export_date);
-CREATE INDEX idx_type ON exported_files (type);
-CREATE INDEX idx_filters ON exported_files USING GIN (filters); -- Index for JSONB column
+-- Create indexes for better query performance
+CREATE INDEX IF NOT EXISTS idx_exported_files_user_id ON exported_files (user_id);
+CREATE INDEX IF NOT EXISTS idx_exported_files_export_date ON exported_files (export_date);
+CREATE INDEX IF NOT EXISTS idx_exported_files_type ON exported_files (type);
+CREATE INDEX IF NOT EXISTS idx_exported_files_filters ON exported_files USING GIN (filters);

@@ -22,6 +22,7 @@ export const decryptData = (encryptedData) => {
 
 export const encryptionMiddleware = (req, res, next) => {
   try {
+    console.log("req.body", req.body);
     console.log("req.body?.data", req.body?.data);
     console.log("req.query?.data", req.query?.data);
     if (req.body?.data) {

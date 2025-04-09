@@ -11,19 +11,28 @@ const OTP = "123456";
 const USER_ROLE_NAME = "user";
 
 export async function signup(req, res) {
-  const { name, email, mobileNumber, password } = req.body;
-  if (!name || !email || !mobileNumber || !password) {
-    return errorResponse(res, "All fields are required");
+  const { name, email, password, mobileNumber } = req.body;
+  if (!name || !email || !password) {  // Removed mobileNumber from required check
+    return errorResponse(res, "Name, email and password are required");
   }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    const existingUser = await client.query(
-      "SELECT id FROM public.users WHERE email = $1 OR mobile_number = $2 LIMIT 1",
-      [email, mobileNumber]
-    );
+    // Modified query to only check email if mobileNumber is not provided
+    let existingUserQuery;
+    let queryParams;
+    
+    if (mobileNumber) {
+      existingUserQuery = "SELECT id FROM public.users WHERE email = $1 OR mobile_number = $2 LIMIT 1";
+      queryParams = [email, mobileNumber];
+    } else {
+      existingUserQuery = "SELECT id FROM public.users WHERE email = $1 LIMIT 1";
+      queryParams = [email];
+    }
+
+    const existingUser = await client.query(existingUserQuery, queryParams);
     if (existingUser.rows.length > 0) {
       await client.query("ROLLBACK");
       return errorResponse(res, "Email or Mobile Number already in use");
@@ -42,7 +51,7 @@ export async function signup(req, res) {
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = await client.query(
       "INSERT INTO public.users (name, email, mobile_number, password, role_id, credits) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, role_id, credits",
-      [name, email, mobileNumber, hashedPassword, roleId, 0]
+      [name, email, mobileNumber || null, hashedPassword, roleId, 0]  // Set mobileNumber to null if not provided
     );
 
     await sendOtpEmail(email, OTP);

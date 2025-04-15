@@ -12,7 +12,7 @@ const USER_ROLE_NAME = "user";
 
 export async function signup(req, res) {
   const { name, email, password, mobileNumber } = req.body;
-  if (!name || !email || !password) {  // Removed mobileNumber from required check
+  if (!name || !email || !password) {
     return errorResponse(res, "Name, email and password are required");
   }
 
@@ -20,19 +20,13 @@ export async function signup(req, res) {
   try {
     await client.query("BEGIN");
 
-    // Modified query to only check email if mobileNumber is not provided
-    let existingUserQuery;
-    let queryParams;
+    const existingUserQuery = mobileNumber 
+      ? "SELECT id FROM public.users WHERE email = $1 OR mobile_number = $2 LIMIT 1"
+      : "SELECT id FROM public.users WHERE email = $1 LIMIT 1";
     
-    if (mobileNumber) {
-      existingUserQuery = "SELECT id FROM public.users WHERE email = $1 OR mobile_number = $2 LIMIT 1";
-      queryParams = [email, mobileNumber];
-    } else {
-      existingUserQuery = "SELECT id FROM public.users WHERE email = $1 LIMIT 1";
-      queryParams = [email];
-    }
-
+    const queryParams = mobileNumber ? [email, mobileNumber] : [email];
     const existingUser = await client.query(existingUserQuery, queryParams);
+
     if (existingUser.rows.length > 0) {
       await client.query("ROLLBACK");
       return errorResponse(res, "Email or Mobile Number already in use");
@@ -42,8 +36,8 @@ export async function signup(req, res) {
       "SELECT id FROM roles WHERE name = $1 LIMIT 1",
       [USER_ROLE_NAME]
     );
-    const roleId = roleResult.rows[0]?.id;
-    if (!roleId) {
+    
+    if (!roleResult.rows[0]?.id) {
       await client.query("ROLLBACK");
       return errorResponse(res, "Role not found", 500);
     }
@@ -51,13 +45,16 @@ export async function signup(req, res) {
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = await client.query(
       "INSERT INTO public.users (name, email, mobile_number, password, role_id, credits) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, role_id, credits",
-      [name, email, mobileNumber || null, hashedPassword, roleId, 0]  // Set mobileNumber to null if not provided
+      [name, email, mobileNumber || null, hashedPassword, roleResult.rows[0].id, 0]
     );
 
-    await sendOtpEmail(email, OTP);
     const token = generateToken(newUser.rows[0]);
-
     await client.query("COMMIT");
+
+    sendOtpEmail(email, OTP).catch(error => 
+      console.error("Failed to send OTP email:", error)
+    );
+
     return successResponse(res, {
       message: "Signup successful, OTP sent",
       token,

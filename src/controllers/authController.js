@@ -20,16 +20,12 @@ export async function signup(req, res) {
   try {
     await client.query("BEGIN");
 
-    const existingUserQuery = mobileNumber 
-      ? "SELECT id FROM public.users WHERE email = $1 OR mobile_number = $2 LIMIT 1"
-      : "SELECT id FROM public.users WHERE email = $1 LIMIT 1";
-    
-    const queryParams = mobileNumber ? [email, mobileNumber] : [email];
-    const existingUser = await client.query(existingUserQuery, queryParams);
+    const existingUserQuery = "SELECT id FROM public.users WHERE email = $1 LIMIT 1";
+    const existingUser = await client.query(existingUserQuery, [email]);
 
     if (existingUser.rows.length > 0) {
       await client.query("ROLLBACK");
-      return errorResponse(res, "Email or Mobile Number already in use");
+      return errorResponse(res, "Email already in use");
     }
 
     const roleResult = await client.query(
@@ -68,6 +64,7 @@ export async function signup(req, res) {
     client.release();
   }
 }
+
 
 export async function login(req, res) {
   const { email, password } = req.body;

@@ -1,6 +1,6 @@
 import csvParser from "csv-parser";
 import fs from "fs";
-import { Readable } from "stream";
+import { Readable, Transform } from "stream";
 import pool from "../config/db.js";
 import {
   successResponse,
@@ -8,7 +8,7 @@ import {
   sendCSVEmail,
 } from "../utils/index.js";
 import pkg from "pg-copy-streams";
-const { from } = pkg;
+const { from,  from: copyFrom } = pkg;
 import { deductCredits } from "../servies/userService.js";
 import { uploadFileToS3 } from "../utils/index.js";
 
@@ -17,96 +17,185 @@ const cleanPhoneNumber = (phone) => {
   return phone.replace(/[^\d+]/g, "");
 };
 
-const processAndInsertLeads = async (results) => {
+// Helper function to handle any type of date format
+const safeDateString = (dateValue) => {
+  if (!dateValue || dateValue === "" || dateValue === "\\N") return null;
+  return dateValue.toString().trim();
+};
+
+// Helper function to safely convert to integer
+const safeInteger = (value) => {
+  if (!value || value === "" || value === "\\N") return null;
+  
+  // Check if the string contains only digits
+  if (!/^\d+$/.test(value.toString().trim())) {
+    return null;
+  }
+  
+  const num = parseInt(value.toString().trim(), 10);
+  return isNaN(num) ? null : num;
+};
+
+// Helper function to properly escape text for PostgreSQL COPY
+const escapeCopyValue = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "\\N";
+  }
+  
+  return value.toString()
+    .replace(/\\/g, "\\\\") // Escape backslashes first
+    .replace(/\t/g, "\\t")  // Escape tabs
+    .replace(/\n/g, "\\n")  // Escape newlines
+    .replace(/\r/g, "\\r"); // Escape carriage returns
+};
+
+// Create a transform stream to convert JSON objects to PostgreSQL COPY format
+class JsonToCopyTransform extends Transform {
+  constructor(options) {
+    super({ objectMode: true });
+  }
+  
+  _transform(row, encoding, callback) {
+    const values = [
+      escapeCopyValue(row["First Name"] || null),
+      escapeCopyValue(row["Last Name"] || null),
+      escapeCopyValue(row["Title"] || null),
+      escapeCopyValue(row["Company"] || null),
+      escapeCopyValue(row["Email"] || null),
+      escapeCopyValue(row["Email Status"] || null),
+      escapeCopyValue(row["Seniority"] || null),
+      escapeCopyValue(row["Departments"] || null),
+      escapeCopyValue(cleanPhoneNumber(row["Work Direct Phone"])),
+      escapeCopyValue(cleanPhoneNumber(row["Mobile Phone"])),
+      escapeCopyValue(cleanPhoneNumber(row["Corporate Phone"])),
+      escapeCopyValue(safeInteger(row["# Employees"])),
+      escapeCopyValue(row["Industry"] || null),
+      escapeCopyValue(row["Keywords"] || null),
+      escapeCopyValue(row["Person Linkedin Url"] || null),
+      escapeCopyValue(row["Website"] || null),
+      escapeCopyValue(row["Company Linkedin Url"] || null),
+      escapeCopyValue(row["Facebook Url"] || null),
+      escapeCopyValue(row["Twitter Url"] || null),
+      escapeCopyValue(row["City"] || null),
+      escapeCopyValue(row["State"] || null),
+      escapeCopyValue(row["Country"] || null),
+      escapeCopyValue(row["Company Address"] || null),
+      escapeCopyValue(row["Company City"] || null),
+      escapeCopyValue(row["Company State"] || null),
+      escapeCopyValue(row["Company Country"] || null),
+      escapeCopyValue(row["SEO Description"] || null),
+      escapeCopyValue(row["Technologies"] || null),
+      escapeCopyValue(row["Annual Revenue"] || null),
+      escapeCopyValue(row["Total Funding"] || null),
+      escapeCopyValue(row["Latest Funding"] || null),
+      escapeCopyValue(row["Latest Funding Amount"] || null),
+      escapeCopyValue(safeDateString(row["Last Raised At"])),
+      escapeCopyValue(safeInteger(row["Number of Retail Locations"]))
+    ].join('\t');
+    
+    this.push(values + '\n');
+    callback();
+  }
+}
+
+const processAndInsertLeads = async (csvStream, totalRows) => {
   const client = await pool.connect();
+  let rowCount = 0;
 
   try {
     await client.query("BEGIN");
 
     // Create a temporary table to stage the data
-    await client.query(
-      "CREATE TEMP TABLE temp_leads (LIKE peopleLeads INCLUDING ALL) ON COMMIT DROP"
-    );
-
-    // Prepare the data for COPY
-    const data = results
-      .map((row) => {
-        const values = [
-          row["First Name"],
-          row["Last Name"],
-          row["Title"],
-          row["Company"],
-          row["Email"],
-          row["Email Status"],
-          row["Seniority"],
-          row["Departments"],
-          cleanPhoneNumber(row["Work Direct Phone"]),
-          cleanPhoneNumber(row["Mobile Phone"]),
-          cleanPhoneNumber(row["Corporate Phone"]),
-          row["# Employees"],
-          row["Industry"],
-          row["Keywords"],
-          row["Person Linkedin Url"],
-          row["Website"],
-          row["Company Linkedin Url"],
-          row["Facebook Url"],
-          row["Twitter Url"],
-          row["City"],
-          row["State"],
-          row["Country"],
-          row["Company Address"],
-          row["Company City"],
-          row["Company State"],
-          row["Company Country"],
-          row["SEO Description"],
-          row["Technologies"],
-          row["Annual Revenue"],
-          row["Total Funding"],
-          row["Latest Funding"],
-          row["Latest Funding Amount"],
-          row["Last Raised At"],
-          row["Number of Retail Locations"],
-        ]
-          .map((val) =>
-            val === null || val === undefined || val === ""
-              ? "\\N"
-              : val.toString().replace(/[\t\n\\]/g, " ")
-          )
-          .join("\t");
-
-        return values;
-      })
-      .join("\n");
-
-    // Use COPY to insert data into the temporary table
-    const copyStream = client.query(
-      from(`COPY temp_leads (
-            first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
-            mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
-            facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
-            seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
-            last_raised_at, num_retail_locations
-        ) FROM STDIN WITH (FORMAT text, NULL '\\N')`)
-    );
-
-    const readable = new Readable();
-    readable.push(data);
-    readable.push(null);
-    await new Promise((resolve, reject) => {
-      readable.pipe(copyStream).on("finish", resolve).on("error", reject);
-    });
-
-    // Update or insert company data based on company_linkedin_url
     await client.query(`
-      -- Deduplicate the data in the temp_leads table
-      CREATE TEMP TABLE deduplicated_temp_leads AS
-      SELECT DISTINCT ON (company_linkedin_url) *
-      FROM temp_leads
-      WHERE company_linkedin_url IS NOT NULL
-      ORDER BY company_linkedin_url, id; -- Use a unique field like 'id' to determine which row to keep
+      CREATE TEMP TABLE temp_leads (
+        id SERIAL,
+        first_name VARCHAR(255),
+        last_name VARCHAR(255),
+        title VARCHAR(255),
+        company VARCHAR(255),
+        email VARCHAR(255),
+        email_status VARCHAR(100),
+        seniority VARCHAR(100),
+        departments VARCHAR(255),
+        work_direct_phone VARCHAR(50),
+        mobile_phone VARCHAR(50),
+        corporate_phone VARCHAR(50),
+        num_employees INTEGER,
+        industry VARCHAR(255),
+        keywords TEXT,
+        linkedin_url VARCHAR(500),
+        website VARCHAR(500),
+        company_linkedin_url VARCHAR(500),
+        facebook_url VARCHAR(500),
+        twitter_url VARCHAR(500),
+        city VARCHAR(100),
+        state VARCHAR(100),
+        country VARCHAR(100),
+        company_address TEXT,
+        company_city VARCHAR(100),
+        company_state VARCHAR(100),
+        company_country VARCHAR(100),
+        seo_description TEXT,
+        technologies TEXT,
+        annual_revenue VARCHAR(100),
+        total_funding VARCHAR(100),
+        latest_funding VARCHAR(100),
+        latest_funding_amount VARCHAR(100),
+        last_raised_at VARCHAR(100),
+        num_retail_locations INTEGER
+      ) ON COMMIT DROP
     `);
 
+    // Use COPY for bulk insert - much faster than individual inserts
+    const copyStream = client.query(
+      copyFrom(`COPY temp_leads (
+        first_name, last_name, title, company, email, email_status, seniority, departments, 
+        work_direct_phone, mobile_phone, corporate_phone, num_employees, industry, keywords, 
+        linkedin_url, website, company_linkedin_url, facebook_url, twitter_url, city, state, 
+        country, company_address, company_city, company_state, company_country, seo_description, 
+        technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount, 
+        last_raised_at, num_retail_locations
+      ) FROM STDIN WITH DELIMITER E'\\t' NULL '\\N'`)
+    );
+
+    // Pipe the CSV stream through the transform and into the COPY stream
+    const transformStream = new JsonToCopyTransform();
+    csvStream.pipe(transformStream).pipe(copyStream);
+
+    // Wait for the COPY operation to complete
+    await new Promise((resolve, reject) => {
+      copyStream.on('error', reject);
+      copyStream.on('finish', resolve);
+    });
+
+    // Set rowCount to the total number of rows processed
+    rowCount = totalRows;
+
+    // Continue with optimized operations on the temp table using direct SQL operations
+
+    // Create an index on company_linkedin_url for better join performance
     await client.query(`
+      CREATE INDEX temp_company_linkedin_idx ON temp_leads (company_linkedin_url) 
+      WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != '';
+    `);
+
+    // Create an index on linkedin_url for better join performance
+    await client.query(`
+      CREATE INDEX temp_linkedin_idx ON temp_leads (linkedin_url) 
+      WHERE linkedin_url IS NOT NULL AND linkedin_url != '';
+    `);
+
+    // Insert or update companies in bulk
+    await client.query(`
+      WITH distinct_companies AS (
+        SELECT DISTINCT ON (company_linkedin_url) 
+          company, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
+          company_address, company_city, company_state, company_country, keywords, seo_description, 
+          technologies, total_funding, latest_funding, latest_funding_amount, last_raised_at, 
+          annual_revenue, num_retail_locations
+        FROM temp_leads
+        WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
+      )
       INSERT INTO companies (
         company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
         company_street, company_city, company_state, company_country, company_postal_code, company_address,
@@ -114,11 +203,12 @@ const processAndInsertLeads = async (results) => {
         last_raised_at, annual_revenue, num_retail_locations, sic_codes, short_description, founded_year
       )
       SELECT 
-        company, num_employees::integer, industry, website, company_linkedin_url, facebook_url, twitter_url,
+        company, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
         company_address, company_city, company_state, company_country, NULL, company_address,
         keywords, NULL, seo_description, technologies, total_funding, latest_funding, latest_funding_amount,
-        last_raised_at::date, annual_revenue, num_retail_locations::integer, NULL, NULL, NULL
-      FROM deduplicated_temp_leads
+        last_raised_at, annual_revenue, num_retail_locations,
+        NULL, NULL, NULL
+      FROM distinct_companies
       ON CONFLICT (company_linkedin_url) DO UPDATE SET
         company_name = EXCLUDED.company_name,
         num_employees = EXCLUDED.num_employees,
@@ -143,7 +233,7 @@ const processAndInsertLeads = async (results) => {
         updated_at = CURRENT_TIMESTAMP
     `);
 
-    // Insert or update people leads data based on linkedin_url
+    // Insert or update people leads data in bulk
     await client.query(`
       INSERT INTO peopleLeads (
         first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
@@ -154,11 +244,12 @@ const processAndInsertLeads = async (results) => {
       )
       SELECT 
         first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
-        mobile_phone, corporate_phone, num_employees::integer, industry, keywords, linkedin_url, website, company_linkedin_url,
+        mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
         facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
         seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
-        last_raised_at::date, num_retail_locations::integer
+        last_raised_at, num_retail_locations
       FROM temp_leads
+      WHERE linkedin_url IS NOT NULL AND linkedin_url != ''
       ON CONFLICT (linkedin_url) DO UPDATE SET
         first_name = EXCLUDED.first_name,
         last_name = EXCLUDED.last_name,
@@ -197,6 +288,7 @@ const processAndInsertLeads = async (results) => {
     `);
 
     await client.query("COMMIT");
+    return rowCount;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -209,29 +301,66 @@ const addPeopleLeadsData = async (req, res) => {
   if (!req.file) return errorResponse(res, "CSV file is required");
 
   const filePath = req.file.path;
-  const results = [];
+  let rowCount = 0;
 
-  fs.createReadStream(filePath)
-    .pipe(csvParser())
-    .on("data", (data) => results.push(data))
-    .on("end", async () => {
-      try {
-        const startTime = Date.now();
-        await processAndInsertLeads(results);
-        const endTime = Date.now();
-        const timeTaken = (endTime - startTime) / 1000;
-        fs.unlinkSync(filePath);
-        return successResponse(res, {
-          message: "Data inserted or updated successfully",
-          count: results.length,
-          time_taken: `${timeTaken} seconds`,
-        });
-      } catch (error) {
-        fs.unlinkSync(filePath);
-        console.error("Error processing data:", error);
-        return errorResponse(res, error.message, 500);
+  try {
+    // Create a readable stream for the CSV file
+    const fileStream = fs.createReadStream(filePath);
+    
+    // Set up CSV parser with error handling
+    const parser = csvParser({
+      trim: true,
+      skipEmptyLines: true,
+      headers: headers => headers.map(h => h.trim())
+    });
+    
+    // Count the number of rows for reporting
+    const countTransform = new Transform({
+      objectMode: true,
+      transform(chunk, encoding, callback) {
+        rowCount++;
+        this.push(chunk);
+        callback();
       }
     });
+    
+    parser.on('error', (error) => {
+      fs.unlinkSync(filePath);
+      return errorResponse(res, `CSV parsing error: ${error.message}`, 400);
+    });
+    
+    // Process the CSV data
+    const startTime = Date.now();
+    
+    try {
+      const csvStream = fileStream
+        .pipe(parser)
+        .pipe(countTransform);
+      
+      const processedCount = await processAndInsertLeads(csvStream, rowCount);
+      
+      const endTime = Date.now();
+      const timeTaken = (endTime - startTime) / 1000;
+      
+      // Clean up the file
+      fs.unlinkSync(filePath);
+      
+      return successResponse(res, {
+        message: "Data inserted or updated successfully",
+        count: processedCount,
+        time_taken: `${timeTaken} seconds`,
+      });
+    } catch (error) {
+      throw error;
+    }
+  } catch (error) {
+    // Make sure to clean up even if initial processing fails
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    console.error("Error processing CSV file:", error);
+    return errorResponse(res, error.message, 500);
+  }
 };
 
 const editPeopleLeadsData = async (req, res) => {
@@ -248,9 +377,8 @@ const editPeopleLeadsData = async (req, res) => {
       .map((key, index) => `${key} = $${index + 1}`)
       .join(", ");
 
-    const query = `UPDATE peopleLeads SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $${
-      keys.length + 1
-    } RETURNING *`;
+    const query = `UPDATE peopleLeads SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $${keys.length + 1
+      } RETURNING *`;
 
     const { rows } = await pool.query(query, [...values, id]);
 
@@ -353,9 +481,8 @@ const getPeopleLeads = async (req, res) => {
       for (const range of includeemployeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${
-            index + 1
-          })`;
+          baseQuery += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${index + 1
+            })`;
           values.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
@@ -385,8 +512,7 @@ const getPeopleLeads = async (req, res) => {
 
         if (!isNaN(min) && !isNaN(max)) {
           revenueConditions.push(
-            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${
-              index + 1
+            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${index + 1
             })`
           );
           values.push(min, max);
@@ -810,70 +936,53 @@ const processAndInsertCompanies = async (results) => {
     );
     console.log("Temporary table created");
 
-    // Prepare the data for COPY
+    // Add an index to the temp table for better performance
+    await client.query("CREATE INDEX ON temp_companies (company_linkedin_url) WHERE company_linkedin_url IS NOT NULL");
+    console.log("Index created on temp_companies");
+
+    // Prepare the data for COPY - ensure empty strings become NULL
     console.log("Preparing data for COPY operation");
     const data = results
       .map((row, index) => {
-        // Debug problematic rows, especially around line 16
-        if (index === 15 || index === 16 || index === 17) {
-          // Lines 16, 17, 18 (0-indexed)
-          console.log(`Debugging row ${index + 1}:`, JSON.stringify(row));
-        }
-
         const values = [
-          row["Company"],
-          row["# Employees"],
-          row["Industry"],
-          row["Website"],
-          row["Company Linkedin Url"],
-          row["Facebook Url"],
-          row["Twitter Url"],
-          row["Company Street"],
-          row["Company City"],
-          row["Company State"],
-          row["Company Country"],
-          row["Company Postal Code"],
-          row["Company Address"],
-          row["Keywords"],
-          cleanPhoneNumber(row["Company Phone"]), // Clean the phone number
-          row["SEO Description"],
-          row["Technologies"],
-          row["Total Funding"],
-          row["Latest Funding"],
-          row["Latest Funding Amount"],
-          row["Last Raised At"],
-          row["Annual Revenue"],
-          row["Number of Retail Locations"],
-          row["SIC Codes"],
-          row["Short Description"],
-          row["Founded Year"],
+          row["Company"] || "\\N",
+          row["# Employees"] || "\\N",  // Make empty strings NULL for integer fields
+          row["Industry"] || "\\N",
+          row["Website"] || "\\N",
+          row["Company Linkedin Url"] || "\\N",
+          row["Facebook Url"] || "\\N",
+          row["Twitter Url"] || "\\N",
+          row["Company Street"] || "\\N",
+          row["Company City"] || "\\N",
+          row["Company State"] || "\\N",
+          row["Company Country"] || "\\N",
+          row["Company Postal Code"] || "\\N",
+          row["Company Address"] || "\\N",
+          row["Keywords"] || "\\N",
+          cleanPhoneNumber(row["Company Phone"]) || "\\N",
+          row["SEO Description"] || "\\N",
+          row["Technologies"] || "\\N",
+          row["Total Funding"] || "\\N",
+          row["Latest Funding"] || "\\N",
+          row["Latest Funding Amount"] || "\\N",
+          row["Last Raised At"] || "\\N", // Ensure NULL for date fields if empty
+          row["Annual Revenue"] || "\\N",
+          row["Number of Retail Locations"] || "\\N", // Make empty strings NULL for integer fields
+          row["SIC Codes"] || "\\N",
+          row["Short Description"] || "\\N",
+          row["Founded Year"] || "\\N", // Make empty strings NULL for integer fields
         ]
-          .map((val, colIndex) => {
-            if (val === null || val === undefined || val === "") {
+          .map(val => {
+            if (val === null || val === undefined || val === "" || val === "\\N") {
               return "\\N";
             } else {
               // Properly escape special characters including carriage returns
-              const escaped = val
+              return val
                 .toString()
                 .replace(/\\/g, "\\\\") // Escape backslashes first
                 .replace(/\r/g, "\\r") // Escape carriage returns
                 .replace(/\n/g, "\\n") // Escape newlines
                 .replace(/\t/g, "\\t"); // Escape tabs
-
-              // Debug specific problematic values
-              if (
-                (index === 15 || index === 16 || index === 17) &&
-                escaped !== val.toString()
-              ) {
-                console.log(
-                  `Row ${index + 1}, Column ${
-                    colIndex + 1
-                  } needed escaping: ${JSON.stringify(val)} -> ${JSON.stringify(
-                    escaped
-                  )}`
-                );
-              }
-              return escaped;
             }
           })
           .join("\t");
@@ -915,37 +1024,137 @@ const processAndInsertCompanies = async (results) => {
         });
     });
 
-    // Insert data from the temporary table into the main table, avoiding duplicates
-    console.log("Inserting data from temporary table to main table");
-    const insertResult = await client.query(`
-            INSERT INTO companies (
-                company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
-                company_street, company_city, company_state, company_country, company_postal_code, company_address,
-                keywords, company_phone, seo_description, technologies, total_funding, latest_funding,
-                latest_funding_amount, last_raised_at, annual_revenue, num_retail_locations, sic_codes,
-                short_description, founded_year
-            )
-            SELECT 
-                company_name, num_employees::integer, industry, website, company_linkedin_url, facebook_url, twitter_url,
-                company_street, company_city, company_state, company_country, company_postal_code, company_address,
-                keywords, company_phone, seo_description, technologies, total_funding, latest_funding,
-                latest_funding_amount::numeric, last_raised_at::date, annual_revenue::numeric, num_retail_locations::integer,
-                sic_codes, short_description, founded_year::integer
-            FROM temp_companies
-            WHERE NOT EXISTS (
-                SELECT 1 FROM companies
-                WHERE companies.company_name = temp_companies.company_name
-                AND companies.company_address = temp_companies.company_address
-            )
-        `);
+    // First, handle records with company_linkedin_url
+    console.log("Inserting/updating records with LinkedIn URLs");
+    const linkedInResult = await client.query(`
+      INSERT INTO companies (
+          company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
+          company_street, company_city, company_state, company_country, company_postal_code, company_address,
+          keywords, company_phone, seo_description, technologies, total_funding, latest_funding,
+          latest_funding_amount, last_raised_at, annual_revenue, num_retail_locations, sic_codes,
+          short_description, founded_year, created_at, updated_at
+      )
+      SELECT 
+          company_name, 
+          num_employees, 
+          industry, 
+          website, 
+          company_linkedin_url, 
+          facebook_url, 
+          twitter_url,
+          company_street, 
+          company_city, 
+          company_state, 
+          company_country, 
+          company_postal_code, 
+          company_address,
+          keywords, 
+          company_phone, 
+          seo_description, 
+          technologies, 
+          total_funding, 
+          latest_funding,
+          latest_funding_amount, 
+          last_raised_at, 
+          annual_revenue, 
+          num_retail_locations,
+          sic_codes, 
+          short_description, 
+          founded_year,
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+      FROM temp_companies
+      WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
+      ON CONFLICT (company_linkedin_url) DO UPDATE SET
+          company_name = EXCLUDED.company_name,
+          num_employees = EXCLUDED.num_employees,
+          industry = EXCLUDED.industry,
+          website = EXCLUDED.website,
+          facebook_url = EXCLUDED.facebook_url,
+          twitter_url = EXCLUDED.twitter_url,
+          company_street = EXCLUDED.company_street,
+          company_city = EXCLUDED.company_city,
+          company_state = EXCLUDED.company_state,
+          company_country = EXCLUDED.company_country,
+          company_postal_code = EXCLUDED.company_postal_code,
+          company_address = EXCLUDED.company_address,
+          keywords = EXCLUDED.keywords,
+          company_phone = EXCLUDED.company_phone,
+          seo_description = EXCLUDED.seo_description,
+          technologies = EXCLUDED.technologies,
+          total_funding = EXCLUDED.total_funding,
+          latest_funding = EXCLUDED.latest_funding,
+          latest_funding_amount = EXCLUDED.latest_funding_amount,
+          last_raised_at = EXCLUDED.last_raised_at, 
+          annual_revenue = EXCLUDED.annual_revenue,
+          num_retail_locations = EXCLUDED.num_retail_locations,
+          sic_codes = EXCLUDED.sic_codes,
+          short_description = EXCLUDED.short_description,
+          founded_year = EXCLUDED.founded_year,
+          updated_at = CURRENT_TIMESTAMP
+    `);
+    
+    console.log(`Upserted ${linkedInResult.rowCount} records with LinkedIn URLs`);
 
-    console.log(
-      `Inserted ${insertResult.rowCount} new records to companies table`
-    );
+    // Then, handle records without LinkedIn URLs based on company name and address
+    console.log("Inserting records without LinkedIn URLs");
+    const noLinkedInResult = await client.query(`
+      INSERT INTO companies (
+          company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
+          company_street, company_city, company_state, company_country, company_postal_code, company_address,
+          keywords, company_phone, seo_description, technologies, total_funding, latest_funding,
+          latest_funding_amount, last_raised_at, annual_revenue, num_retail_locations, sic_codes,
+          short_description, founded_year, created_at, updated_at
+      )
+      SELECT 
+          company_name, 
+          num_employees, 
+          industry, 
+          website, 
+          company_linkedin_url, 
+          facebook_url, 
+          twitter_url,
+          company_street, 
+          company_city, 
+          company_state, 
+          company_country, 
+          company_postal_code, 
+          company_address,
+          keywords, 
+          company_phone, 
+          seo_description, 
+          technologies, 
+          total_funding, 
+          latest_funding,
+          latest_funding_amount, 
+          last_raised_at, 
+          annual_revenue, 
+          num_retail_locations,
+          sic_codes, 
+          short_description, 
+          founded_year,
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+      FROM temp_companies tc
+      WHERE (tc.company_linkedin_url IS NULL OR tc.company_linkedin_url = '')
+      AND NOT EXISTS (
+          SELECT 1 FROM companies c
+          WHERE c.company_name = tc.company_name
+          AND (
+              (c.company_address IS NOT NULL AND tc.company_address IS NOT NULL AND c.company_address = tc.company_address)
+              OR (c.company_address IS NULL AND tc.company_address IS NULL)
+          )
+      )
+    `);
+
+    console.log(`Inserted ${noLinkedInResult.rowCount} new records without LinkedIn URLs`);
+    
+    const totalCount = linkedInResult.rowCount + noLinkedInResult.rowCount;
+    console.log(`Total records processed: ${totalCount}`);
 
     await client.query("COMMIT");
     console.log("Transaction committed successfully");
-    return insertResult.rowCount;
+    return totalCount;
   } catch (error) {
     console.error("Error in processAndInsertCompanies:", error);
     await client.query("ROLLBACK");
@@ -956,7 +1165,6 @@ const processAndInsertCompanies = async (results) => {
     console.log("Database client released");
   }
 };
-
 const addCompaniesData = (req, res) => {
   console.log("Starting addCompaniesData process");
   if (!req.file) {
@@ -1033,7 +1241,7 @@ const addCompaniesData = (req, res) => {
 // Helper function to convert DD-MM-YYYY to YYYY-MM-DD
 function convertDateFormat(dateStr) {
   if (!dateStr) return null;
-  
+
   // Handle cases where date might already be in different format
   if (dateStr.includes('/')) {
     const parts = dateStr.split('/');
@@ -1041,7 +1249,7 @@ function convertDateFormat(dateStr) {
       return `${parts[2]}-${parts[1]}-${parts[0]}`;
     }
   }
-  
+
   // Handle DD-MM-YYYY format
   const parts = dateStr.split('-');
   if (parts.length === 3) {
@@ -1050,7 +1258,7 @@ function convertDateFormat(dateStr) {
     const month = parts[1].padStart(2, '0');
     return `${parts[2]}-${month}-${day}`;
   }
-  
+
   // Return as-is if format doesn't match
   return dateStr;
 }
@@ -1131,9 +1339,8 @@ const getCompanies = async (req, res) => {
       for (const range of employeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${
-            index + 1
-          })`;
+          baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1
+            })`;
           values.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
@@ -1163,8 +1370,7 @@ const getCompanies = async (req, res) => {
 
         if (!isNaN(min) && !isNaN(max)) {
           revenueConditions.push(
-            `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${
-              index + 1
+            `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${index + 1
             })`
           );
           values.push(min, max);
@@ -1305,14 +1511,14 @@ const exportCompaniesToCSV = async (req, res) => {
     // If leadsId is provided and not empty, override all other filters
     if (leadsId && leadsId.length > 0) {
       baseQuery = `SELECT * FROM companies WHERE id IN (`;
-      
+
       // Add parameterized placeholders for each lead ID
       baseQuery += leadsId.map((_, i) => `$${index + i}`).join(',');
       baseQuery += `)`;
-      
+
       // Add the actual lead IDs to the values array
       values = leadsId;
-      
+
       // Add LIMIT to the query
       baseQuery += ` LIMIT $${index + leadsId.length}`;
       values.push(limit);
@@ -1367,9 +1573,8 @@ const exportCompaniesToCSV = async (req, res) => {
         for (const range of employeeCount) {
           const [min, max] = range.split("-").map(Number);
           if (!isNaN(min) && !isNaN(max)) {
-            baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${
-              index + 1
-            })`;
+            baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1
+              })`;
             values.push(min, max);
             index += 2;
           } else if (!isNaN(min) && range.includes("+")) {
@@ -1398,8 +1603,7 @@ const exportCompaniesToCSV = async (req, res) => {
 
           if (!isNaN(min) && !isNaN(max)) {
             revenueConditions.push(
-              `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${
-                index + 1
+              `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${index + 1
               })`
             );
             values.push(min, max);
@@ -1614,9 +1818,8 @@ const editCompanyLeadData = async (req, res) => {
       .map((key, index) => `${key} = $${index + 1}`)
       .join(", ");
 
-    const query = `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $${
-      keys.length + 1
-    } RETURNING *`;
+    const query = `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $${keys.length + 1
+      } RETURNING *`;
 
     const { rows } = await pool.query(query, [...values, id]);
 

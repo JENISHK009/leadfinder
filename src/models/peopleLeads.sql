@@ -36,39 +36,8 @@ CREATE TABLE IF NOT EXISTS peopleLeads (
     total_funding VARCHAR(100),
     latest_funding VARCHAR(100),
     latest_funding_amount VARCHAR(100),
-    last_raised_at DATE,
+    last_raised_at VARCHAR(100),
     num_retail_locations INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-
-CREATE INDEX idx_first_name ON peopleLeads (first_name);
-CREATE INDEX idx_last_name ON peopleLeads (last_name);
-CREATE INDEX idx_email ON peopleLeads (email);
-CREATE INDEX idx_company ON peopleLeads (company);
-CREATE INDEX idx_industry ON peopleLeads (industry);
-CREATE INDEX idx_country ON peopleLeads (country);
-CREATE INDEX idx_state ON peopleLeads (state);
-CREATE INDEX idx_city ON peopleLeads (city);
-CREATE INDEX idx_seniority ON peopleLeads (seniority);
-CREATE INDEX idx_departments ON peopleLeads (departments);
-CREATE INDEX idx_num_employees ON peopleLeads (num_employees);
-
--- Drop existing trigger if it exists
-DROP TRIGGER IF EXISTS update_peopleLeads_timestamp ON peopleLeads;
-
--- Function to Update Timestamp
-CREATE OR REPLACE FUNCTION update_peopleLeads_timestamp() 
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = CURRENT_TIMESTAMP;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Create Trigger
-CREATE TRIGGER update_peopleLeads_timestamp
-  BEFORE UPDATE ON peopleLeads
-  FOR EACH ROW
-  EXECUTE FUNCTION update_peopleLeads_timestamp();

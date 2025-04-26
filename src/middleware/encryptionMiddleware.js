@@ -22,18 +22,14 @@ export const decryptData = (encryptedData) => {
 
 export const encryptionMiddleware = (req, res, next) => {
   try {
-    console.log("req.body", req.body);
-    console.log("req.body?.data", req.body?.data);
-    console.log("req.query?.data", req.query?.data);
+    console.log("req.body.data", req.body)
     if (req.body?.data) {
       const decryptedBody = decryptData(req.body.data);
-      console.log("decryptedBody", decryptedBody);
       if (!decryptedBody)
         return res
           .status(400)
           .json({ success: false, message: "Invalid encrypted body data" });
       req.body = decryptedBody;
-      console.log("req.body", req.body);
     }
 
     if (req.query?.data) {
@@ -48,7 +44,6 @@ export const encryptionMiddleware = (req, res, next) => {
 
     const originalJson = res.json;
     res.json = (data) => {
-      console.log("data", data);
       const success = res.statusCode >= 200 && res.statusCode < 300;
       return originalJson.call(res, {
         success,

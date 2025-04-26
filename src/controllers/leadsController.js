@@ -1,5 +1,3 @@
-import csvParser from "csv-parser";
-import fs from "fs";
 import { Readable, Transform } from "stream";
 import pool from "../config/db.js";
 import {
@@ -8,7 +6,7 @@ import {
   sendCSVEmail,
 } from "../utils/index.js";
 import pkg from "pg-copy-streams";
-const { from,  from: copyFrom } = pkg;
+const { from, from: copyFrom } = pkg;
 import { deductCredits } from "../servies/userService.js";
 import { uploadFileToS3 } from "../utils/index.js";
 
@@ -17,31 +15,27 @@ const cleanPhoneNumber = (phone) => {
   return phone.replace(/[^\d+]/g, "");
 };
 
-// Helper function to handle any type of date format
 const safeDateString = (dateValue) => {
   if (!dateValue || dateValue === "" || dateValue === "\\N") return null;
   return dateValue.toString().trim();
 };
 
-// Helper function to safely convert to integer
 const safeInteger = (value) => {
   if (!value || value === "" || value === "\\N") return null;
-  
-  // Check if the string contains only digits
+
   if (!/^\d+$/.test(value.toString().trim())) {
     return null;
   }
-  
+
   const num = parseInt(value.toString().trim(), 10);
   return isNaN(num) ? null : num;
 };
 
-// Helper function to properly escape text for PostgreSQL COPY
 const escapeCopyValue = (value) => {
   if (value === null || value === undefined || value === "") {
     return "\\N";
   }
-  
+
   return value.toString()
     .replace(/\\/g, "\\\\") // Escape backslashes first
     .replace(/\t/g, "\\t")  // Escape tabs
@@ -49,12 +43,11 @@ const escapeCopyValue = (value) => {
     .replace(/\r/g, "\\r"); // Escape carriage returns
 };
 
-// Create a transform stream to convert JSON objects to PostgreSQL COPY format
 class JsonToCopyTransform extends Transform {
   constructor(options) {
     super({ objectMode: true });
   }
-  
+
   _transform(row, encoding, callback) {
     const values = [
       escapeCopyValue(row["First Name"] || null),
@@ -92,14 +85,15 @@ class JsonToCopyTransform extends Transform {
       escapeCopyValue(safeDateString(row["Last Raised At"])),
       escapeCopyValue(safeInteger(row["Number of Retail Locations"]))
     ].join('\t');
-    
+
     this.push(values + '\n');
     callback();
   }
 }
 
-const processAndInsertLeads = async (csvStream, totalRows) => {
+const processAndInsertLeads = async (jsonData) => {
   const client = await pool.connect();
+  const totalRows = jsonData.length;
   let rowCount = 0;
 
   try {
@@ -158,82 +152,69 @@ const processAndInsertLeads = async (csvStream, totalRows) => {
       ) FROM STDIN WITH DELIMITER E'\\t' NULL '\\N'`)
     );
 
-    // Pipe the CSV stream through the transform and into the COPY stream
-    const transformStream = new JsonToCopyTransform();
-    csvStream.pipe(transformStream).pipe(copyStream);
+    const jsonStream = Readable.from(jsonData);
 
-    // Wait for the COPY operation to complete
+    const transformStream = new JsonToCopyTransform();
+    jsonStream.pipe(transformStream).pipe(copyStream);
+
     await new Promise((resolve, reject) => {
       copyStream.on('error', reject);
       copyStream.on('finish', resolve);
     });
 
-    // Set rowCount to the total number of rows processed
     rowCount = totalRows;
 
-    // Continue with optimized operations on the temp table using direct SQL operations
-
-    // Create an index on company_linkedin_url for better join performance
     await client.query(`
       CREATE INDEX temp_company_linkedin_idx ON temp_leads (company_linkedin_url) 
       WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != '';
     `);
 
-    // Create an index on linkedin_url for better join performance
     await client.query(`
       CREATE INDEX temp_linkedin_idx ON temp_leads (linkedin_url) 
       WHERE linkedin_url IS NOT NULL AND linkedin_url != '';
     `);
 
-    // Insert or update companies in bulk
     await client.query(`
       WITH distinct_companies AS (
-        SELECT DISTINCT ON (company_linkedin_url) 
-          company, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
-          company_address, company_city, company_state, company_country, keywords, seo_description, 
-          technologies, total_funding, latest_funding, latest_funding_amount, last_raised_at, 
-          annual_revenue, num_retail_locations
-        FROM temp_leads
-        WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
-      )
-      INSERT INTO companies (
-        company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
-        company_street, company_city, company_state, company_country, company_postal_code, company_address,
-        keywords, company_phone, seo_description, technologies, total_funding, latest_funding, latest_funding_amount,
-        last_raised_at, annual_revenue, num_retail_locations, sic_codes, short_description, founded_year
-      )
-      SELECT 
-        company, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
-        company_address, company_city, company_state, company_country, NULL, company_address,
-        keywords, NULL, seo_description, technologies, total_funding, latest_funding, latest_funding_amount,
-        last_raised_at, annual_revenue, num_retail_locations,
-        NULL, NULL, NULL
-      FROM distinct_companies
-      ON CONFLICT (company_linkedin_url) DO UPDATE SET
-        company_name = EXCLUDED.company_name,
-        num_employees = EXCLUDED.num_employees,
-        industry = EXCLUDED.industry,
-        website = EXCLUDED.website,
-        facebook_url = EXCLUDED.facebook_url,
-        twitter_url = EXCLUDED.twitter_url,
-        company_street = EXCLUDED.company_street,
-        company_city = EXCLUDED.company_city,
-        company_state = EXCLUDED.company_state,
-        company_country = EXCLUDED.company_country,
-        company_address = EXCLUDED.company_address,
-        keywords = EXCLUDED.keywords,
-        seo_description = EXCLUDED.seo_description,
-        technologies = EXCLUDED.technologies,
-        total_funding = EXCLUDED.total_funding,
-        latest_funding = EXCLUDED.latest_funding,
-        latest_funding_amount = EXCLUDED.latest_funding_amount,
-        last_raised_at = EXCLUDED.last_raised_at,
-        annual_revenue = EXCLUDED.annual_revenue,
-        num_retail_locations = EXCLUDED.num_retail_locations,
-        updated_at = CURRENT_TIMESTAMP
+  SELECT DISTINCT ON (company_linkedin_url)
+    company, num_employees, website, company_linkedin_url,
+    company_address, company_city, company_state, company_country,
+    total_funding, latest_funding, latest_funding_amount, last_raised_at,
+    annual_revenue, num_retail_locations
+  FROM temp_leads
+  WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
+)
+INSERT INTO companies (
+  company_name, num_employees, website, company_linkedin_url,
+  company_street, company_city, company_state, company_country, company_postal_code, company_address,
+  company_phone, total_funding, latest_funding, latest_funding_amount,
+  last_raised_at, annual_revenue, num_retail_locations, sic_codes, founded_year
+)
+SELECT 
+  company, num_employees, website, company_linkedin_url,
+  company_address, company_city, company_state, company_country, NULL, company_address,
+  NULL, total_funding, latest_funding, latest_funding_amount,
+  last_raised_at, annual_revenue, num_retail_locations,
+  NULL, NULL
+FROM distinct_companies
+ON CONFLICT (company_linkedin_url) DO UPDATE SET
+  company_name = EXCLUDED.company_name,
+  num_employees = EXCLUDED.num_employees,
+  website = EXCLUDED.website,
+  company_street = EXCLUDED.company_street,
+  company_city = EXCLUDED.company_city,
+  company_state = EXCLUDED.company_state,
+  company_country = EXCLUDED.company_country,
+  company_address = EXCLUDED.company_address,
+  total_funding = EXCLUDED.total_funding,
+  latest_funding = EXCLUDED.latest_funding,
+  latest_funding_amount = EXCLUDED.latest_funding_amount,
+  last_raised_at = EXCLUDED.last_raised_at,
+  annual_revenue = EXCLUDED.annual_revenue,
+  num_retail_locations = EXCLUDED.num_retail_locations,
+  updated_at = CURRENT_TIMESTAMP
     `);
 
-    // Insert or update people leads data in bulk
     await client.query(`
       INSERT INTO peopleLeads (
         first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
@@ -298,53 +279,19 @@ const processAndInsertLeads = async (csvStream, totalRows) => {
 };
 
 const addPeopleLeadsData = async (req, res) => {
-  if (!req.file) return errorResponse(res, "CSV file is required");
-
-  const filePath = req.file.path;
-  let rowCount = 0;
+  if (!req.body || !Array.isArray(req.body) || req.body.length === 0) {
+    return errorResponse(res, "Valid JSON data array is required", 400);
+  }
 
   try {
-    // Create a readable stream for the CSV file
-    const fileStream = fs.createReadStream(filePath);
-    
-    // Set up CSV parser with error handling
-    const parser = csvParser({
-      trim: true,
-      skipEmptyLines: true,
-      headers: headers => headers.map(h => h.trim())
-    });
-    
-    // Count the number of rows for reporting
-    const countTransform = new Transform({
-      objectMode: true,
-      transform(chunk, encoding, callback) {
-        rowCount++;
-        this.push(chunk);
-        callback();
-      }
-    });
-    
-    parser.on('error', (error) => {
-      fs.unlinkSync(filePath);
-      return errorResponse(res, `CSV parsing error: ${error.message}`, 400);
-    });
-    
-    // Process the CSV data
     const startTime = Date.now();
-    
+
     try {
-      const csvStream = fileStream
-        .pipe(parser)
-        .pipe(countTransform);
-      
-      const processedCount = await processAndInsertLeads(csvStream, rowCount);
-      
+      const processedCount = await processAndInsertLeads(req.body);
+
       const endTime = Date.now();
       const timeTaken = (endTime - startTime) / 1000;
-      
-      // Clean up the file
-      fs.unlinkSync(filePath);
-      
+
       return successResponse(res, {
         message: "Data inserted or updated successfully",
         count: processedCount,
@@ -354,11 +301,7 @@ const addPeopleLeadsData = async (req, res) => {
       throw error;
     }
   } catch (error) {
-    // Make sure to clean up even if initial processing fails
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    console.error("Error processing CSV file:", error);
+    console.error("Error processing JSON data:", error);
     return errorResponse(res, error.message, 500);
   }
 };
@@ -922,6 +865,30 @@ const deductCreditsFromUser = async (req, res) => {
   }
 };
 
+function convertDateFormat(dateStr) {
+  if (!dateStr) return null;
+
+  // Handle cases where date might already be in different format
+  if (dateStr.includes('/')) {
+    const parts = dateStr.split('/');
+    if (parts.length === 3) {
+      return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+  }
+
+  // Handle DD-MM-YYYY format
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    // Ensure two-digit day and month
+    const day = parts[0].padStart(2, '0');
+    const month = parts[1].padStart(2, '0');
+    return `${parts[2]}-${month}-${day}`;
+  }
+
+  // Return as-is if format doesn't match
+  return dateStr;
+}
+
 const processAndInsertCompanies = async (results) => {
   console.log(`Starting to process ${results.length} companies`);
   const client = await pool.connect();
@@ -1093,7 +1060,7 @@ const processAndInsertCompanies = async (results) => {
           founded_year = EXCLUDED.founded_year,
           updated_at = CURRENT_TIMESTAMP
     `);
-    
+
     console.log(`Upserted ${linkedInResult.rowCount} records with LinkedIn URLs`);
 
     // Then, handle records without LinkedIn URLs based on company name and address
@@ -1148,7 +1115,7 @@ const processAndInsertCompanies = async (results) => {
     `);
 
     console.log(`Inserted ${noLinkedInResult.rowCount} new records without LinkedIn URLs`);
-    
+
     const totalCount = linkedInResult.rowCount + noLinkedInResult.rowCount;
     console.log(`Total records processed: ${totalCount}`);
 
@@ -1165,103 +1132,51 @@ const processAndInsertCompanies = async (results) => {
     console.log("Database client released");
   }
 };
-const addCompaniesData = (req, res) => {
+
+const addCompaniesData = async (req, res) => {
   console.log("Starting addCompaniesData process");
-  if (!req.file) {
-    console.log("No file provided in request");
-    return res.status(400).json({ error: "CSV file is required" });
+
+  if (!req.body || !Array.isArray(req.body) || req.body.length === 0) {
+    console.log("No valid data provided in request body");
+    return errorResponse(res, "Valid JSON data array is required", 400);
   }
 
-  const filePath = req.file.path;
-  console.log(`Processing CSV file: ${filePath}`);
-  const results = [];
+  const results = [...req.body];
+  console.log(`Processing ${results.length} company records from JSON data`);
 
-  fs.createReadStream(filePath)
-    .pipe(csvParser())
-    .on("data", (data) => {
-      // Convert date fields from DD-MM-YYYY to YYYY-MM-DD format
-      const dateFields = ['Last Raised At', 'Founded Year']; // Add other date fields if needed
-      
-      dateFields.forEach(field => {
-        if (data[field]) {
-          data[field] = convertDateFormat(data[field]);
-        }
-      });
+  results.forEach(data => {
+    const dateFields = ['Last Raised At', 'Founded Year']; // Add other date fields if needed
 
-      results.push(data);
-      if (results.length % 100 === 0) {
-        console.log(`Processed ${results.length} rows from CSV`);
+    dateFields.forEach(field => {
+      if (data[field]) {
+        data[field] = convertDateFormat(data[field]);
       }
-    })
-    .on("end", async () => {
-      console.log(`CSV parsing complete. Total rows: ${results.length}`);
-      try {
-        const startTime = Date.now();
-        console.log(
-          `Starting database insertion at ${new Date(startTime).toISOString()}`
-        );
-        const insertedCount = await processAndInsertCompanies(results);
-        const endTime = Date.now();
-        const timeTaken = (endTime - startTime) / 1000;
-        console.log(`Database insertion completed in ${timeTaken} seconds`);
-
-        fs.unlinkSync(filePath);
-        console.log(`Temporary file ${filePath} deleted`);
-
-        return res.status(200).json({
-          message: "Data inserted or updated successfully",
-          total_rows: results.length,
-          inserted_rows: insertedCount,
-          time_taken: `${timeTaken} seconds`,
-        });
-      } catch (error) {
-        console.error("Error during data processing:", error);
-        try {
-          fs.unlinkSync(filePath);
-          console.log(`Temporary file ${filePath} deleted after error`);
-        } catch (unlinkError) {
-          console.error("Error deleting temporary file:", unlinkError);
-        }
-        return res.status(500).json({
-          error: "Error processing data",
-          message: error.message,
-          details: error.detail || error.hint || null,
-        });
-      }
-    })
-    .on("error", (error) => {
-      console.error("Error parsing CSV:", error);
-      return res.status(500).json({
-        error: "Error parsing CSV file",
-        message: error.message,
-      });
     });
+  });
+
+  try {
+    const startTime = Date.now();
+    console.log(`Starting database insertion at ${new Date(startTime).toISOString()}`);
+
+    const insertedCount = await processAndInsertCompanies(results);
+
+    const endTime = Date.now();
+    const timeTaken = (endTime - startTime) / 1000;
+    console.log(`Database insertion completed in ${timeTaken} seconds`);
+
+    return successResponse(res, {
+      message: "Data inserted or updated successfully",
+      total_rows: results.length,
+      inserted_rows: insertedCount,
+      time_taken: `${timeTaken} seconds`,
+    });
+  } catch (error) {
+    console.error("Error during data processing:", error);
+    return errorResponse(res, `Error processing data: ${error.message}`, 500, {
+      details: error.detail || error.hint || null
+    });
+  }
 };
-
-// Helper function to convert DD-MM-YYYY to YYYY-MM-DD
-function convertDateFormat(dateStr) {
-  if (!dateStr) return null;
-
-  // Handle cases where date might already be in different format
-  if (dateStr.includes('/')) {
-    const parts = dateStr.split('/');
-    if (parts.length === 3) {
-      return `${parts[2]}-${parts[1]}-${parts[0]}`;
-    }
-  }
-
-  // Handle DD-MM-YYYY format
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    // Ensure two-digit day and month
-    const day = parts[0].padStart(2, '0');
-    const month = parts[1].padStart(2, '0');
-    return `${parts[2]}-${month}-${day}`;
-  }
-
-  // Return as-is if format doesn't match
-  return dateStr;
-}
 
 const getCompanies = async (req, res) => {
   try {

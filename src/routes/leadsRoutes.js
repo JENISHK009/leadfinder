@@ -7,7 +7,6 @@ const router = express.Router();
 
 router.post(
   "/addPeopleLeadsData",
-  upload.single("file"),
   leadsController.addPeopleLeadsData
 );
 router.post("/getPeopleLeads", leadsController.getPeopleLeads);
@@ -15,7 +14,6 @@ router.post("/exportPeopleLeadsToCSV", leadsController.exportPeopleLeadsToCSV);
 router.post("/deductCreditsFromUser", leadsController.deductCreditsFromUser);
 router.post(
   "/addCompaniesData",
-  upload.single("file"),
   leadsController.addCompaniesData
 );
 router.post("/getCompanies", leadsController.getCompanies);

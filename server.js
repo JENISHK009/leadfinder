@@ -68,7 +68,7 @@ app.use(
 );
 
 // Middleware for parsing JSON (for all other routes)
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' }));
 
 // Encryption middleware
 app.use(encryptionMiddleware);

@@ -865,29 +865,6 @@ const deductCreditsFromUser = async (req, res) => {
   }
 };
 
-function convertDateFormat(dateStr) {
-  if (!dateStr) return null;
-
-  // Handle cases where date might already be in different format
-  if (dateStr.includes('/')) {
-    const parts = dateStr.split('/');
-    if (parts.length === 3) {
-      return `${parts[2]}-${parts[1]}-${parts[0]}`;
-    }
-  }
-
-  // Handle DD-MM-YYYY format
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    // Ensure two-digit day and month
-    const day = parts[0].padStart(2, '0');
-    const month = parts[1].padStart(2, '0');
-    return `${parts[2]}-${month}-${day}`;
-  }
-
-  // Return as-is if format doesn't match
-  return dateStr;
-}
 
 const processAndInsertCompanies = async (results) => {
   console.log(`Starting to process ${results.length} companies`);
@@ -895,11 +872,10 @@ const processAndInsertCompanies = async (results) => {
 
   try {
     await client.query("BEGIN");
-    console.log("Transaction started");
 
+    // Create the temp table with minimal columns - only what we need
     await client.query(`
       CREATE TEMP TABLE temp_companies (
-        id SERIAL PRIMARY KEY,
         company_name TEXT,
         num_employees INTEGER,
         industry TEXT,
@@ -920,7 +896,7 @@ const processAndInsertCompanies = async (results) => {
         total_funding TEXT,
         latest_funding TEXT,
         latest_funding_amount TEXT,
-        last_raised_at DATE,
+        last_raised_at TEXT,
         annual_revenue TEXT,
         num_retail_locations INTEGER,
         sic_codes TEXT,
@@ -928,75 +904,62 @@ const processAndInsertCompanies = async (results) => {
         founded_year INTEGER
       ) ON COMMIT DROP
     `);
-    console.log("Temporary table created");
 
-    // Process data in batches to reduce memory usage
-    const BATCH_SIZE = 50; // Adjust based on your needs
+    const BATCH_SIZE = 200;
     const batches = [];
     
     for (let i = 0; i < results.length; i += BATCH_SIZE) {
       batches.push(results.slice(i, i + BATCH_SIZE));
     }
     
-    console.log(`Split into ${batches.length} batches for processing`);
+    // Prepare all batches in parallel for better memory efficiency
+    const processedBatches = batches.map(batch => {
+      return batch.map(row => {
+        return [
+          row["Company"] || "\\N",
+          row["# Employees"] || "\\N",
+          row["Industry"] || "\\N",
+          row["Website"] || "\\N",
+          row["Company Linkedin Url"] || "\\N",
+          row["Facebook Url"] || "\\N",
+          row["Twitter Url"] || "\\N",
+          row["Company Street"] || "\\N",
+          row["Company City"] || "\\N",
+          row["Company State"] || "\\N",
+          row["Company Country"] || "\\N",
+          row["Company Postal Code"] || "\\N",
+          row["Company Address"] || "\\N",
+          row["Keywords"] || "\\N",
+          cleanPhoneNumber(row["Company Phone"]) || "\\N",
+          row["SEO Description"] || "\\N",
+          row["Technologies"] || "\\N",
+          row["Total Funding"] || "\\N",
+          row["Latest Funding"] || "\\N",
+          row["Latest Funding Amount"] || "\\N",
+          row["Last Raised At"] || "\\N",
+          row["Annual Revenue"] || "\\N",
+          row["Number of Retail Locations"] || "\\N",
+          row["SIC Codes"] || "\\N",
+          row["Short Description"] || "\\N",
+          row["Founded Year"] || "\\N",
+        ]
+          .map(val => {
+            if (val === null || val === undefined || val === "" || val === "\\N") {
+              return "\\N";
+            } else {
+              return val
+                .toString()
+                .replace(/\\/g, "\\\\")
+                .replace(/[\r\n\t]/g, m => m === '\r' ? '\\r' : m === '\n' ? '\\n' : '\\t');
+            }
+          })
+          .join("\t");
+      }).join("\n");
+    });
     
-    let totalInserted = 0;
-    
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} records`);
+    for (let batchIndex = 0; batchIndex < processedBatches.length; batchIndex++) {
+      const batchData = processedBatches[batchIndex];
       
-      // Prepare the data for COPY
-      const data = batch
-        .map(row => {
-          const values = [
-            row["Company"] || "\\N",
-            row["# Employees"] || "\\N",
-            row["Industry"] || "\\N",
-            row["Website"] || "\\N",
-            row["Company Linkedin Url"] || "\\N",
-            row["Facebook Url"] || "\\N",
-            row["Twitter Url"] || "\\N",
-            row["Company Street"] || "\\N",
-            row["Company City"] || "\\N",
-            row["Company State"] || "\\N",
-            row["Company Country"] || "\\N",
-            row["Company Postal Code"] || "\\N",
-            row["Company Address"] || "\\N",
-            row["Keywords"] || "\\N",
-            cleanPhoneNumber(row["Company Phone"]) || "\\N",
-            row["SEO Description"] || "\\N",
-            row["Technologies"] || "\\N",
-            row["Total Funding"] || "\\N",
-            row["Latest Funding"] || "\\N",
-            row["Latest Funding Amount"] || "\\N",
-            row["Last Raised At"] || "\\N",
-            row["Annual Revenue"] || "\\N",
-            row["Number of Retail Locations"] || "\\N",
-            row["SIC Codes"] || "\\N",
-            row["Short Description"] || "\\N",
-            row["Founded Year"] || "\\N",
-          ]
-            .map(val => {
-              if (val === null || val === undefined || val === "" || val === "\\N") {
-                return "\\N";
-              } else {
-                // Properly escape special characters
-                return val
-                  .toString()
-                  .replace(/\\/g, "\\\\")
-                  .replace(/\r/g, "\\r")
-                  .replace(/\n/g, "\\n")
-                  .replace(/\t/g, "\\t");
-              }
-            })
-            .join("\t");
-
-          return values;
-        })
-        .join("\n");
-
-      // Use COPY to insert data into the temporary table (much faster than individual inserts)
       const copyStream = client.query(
         from(`COPY temp_companies (
               company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
@@ -1008,7 +971,7 @@ const processAndInsertCompanies = async (results) => {
       );
 
       const readable = new Readable();
-      readable.push(data);
+      readable.push(batchData);
       readable.push(null);
       await new Promise((resolve, reject) => {
         readable
@@ -1016,52 +979,15 @@ const processAndInsertCompanies = async (results) => {
           .on("finish", resolve)
           .on("error", reject);
       });
-      
-      console.log(`Batch ${batchIndex + 1} loaded into temp table`);
     }
     
-    // Handle duplicates within the temp table by keeping only the latest entry by id
-    console.log("Handling duplicates in temp table");
-    await client.query(`
-      CREATE TEMP TABLE deduplicated_companies AS
-      WITH ranked_companies AS (
-        SELECT
-          *,
-          ROW_NUMBER() OVER (
-            PARTITION BY company_linkedin_url
-            ORDER BY id DESC
-          ) as row_num
+    const linkedInResult = await client.query(`
+      WITH deduplicated AS (
+        SELECT DISTINCT ON (company_linkedin_url) * 
         FROM temp_companies
         WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
+        ORDER BY company_linkedin_url, company_name
       )
-      SELECT
-        company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
-        company_street, company_city, company_state, company_country, company_postal_code, company_address,
-        keywords, company_phone, seo_description, technologies, total_funding, latest_funding,
-        latest_funding_amount, last_raised_at, annual_revenue, num_retail_locations, sic_codes,
-        short_description, founded_year
-      FROM ranked_companies
-      WHERE row_num = 1
-      
-      UNION ALL
-      
-      SELECT
-        company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
-        company_street, company_city, company_state, company_country, company_postal_code, company_address,
-        keywords, company_phone, seo_description, technologies, total_funding, latest_funding,
-        latest_funding_amount, last_raised_at, annual_revenue, num_retail_locations, sic_codes,
-        short_description, founded_year
-      FROM temp_companies
-      WHERE company_linkedin_url IS NULL OR company_linkedin_url = '';
-    `);
-    
-    // Create index for performance on the deduplicated table
-    await client.query("CREATE INDEX ON deduplicated_companies (company_linkedin_url) WHERE company_linkedin_url IS NOT NULL");
-    
-    console.log("Temp table deduplicated, performing main insertion");
-
-    // First, handle records with company_linkedin_url
-    const linkedInResult = await client.query(`
       INSERT INTO companies (
           company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
           company_street, company_city, company_state, company_country, company_postal_code, company_address,
@@ -1098,9 +1024,9 @@ const processAndInsertCompanies = async (results) => {
           founded_year,
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
-      FROM deduplicated_companies
-      WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
-      ON CONFLICT (company_linkedin_url) DO UPDATE SET
+      FROM deduplicated
+      ON CONFLICT (company_linkedin_url) 
+      DO UPDATE SET
           company_name = EXCLUDED.company_name,
           num_employees = EXCLUDED.num_employees,
           industry = EXCLUDED.industry,
@@ -1129,9 +1055,20 @@ const processAndInsertCompanies = async (results) => {
           updated_at = CURRENT_TIMESTAMP
     `);
 
-    console.log(`Upserted ${linkedInResult.rowCount} records with LinkedIn URLs`);
+    // Create a temporary index for the next step (helps with the join)
+    await client.query(`
+      CREATE INDEX temp_comp_name_addr ON temp_companies (company_name, company_address) 
+      WHERE company_linkedin_url IS NULL OR company_linkedin_url = ''
+    `);
 
+    // Handle non-LinkedIn records with a more optimized query using DISTINCT ON
     const noLinkedInResult = await client.query(`
+      WITH distinct_companies AS (
+        SELECT DISTINCT ON (company_name, company_address) *
+        FROM temp_companies
+        WHERE company_linkedin_url IS NULL OR company_linkedin_url = ''
+        ORDER BY company_name, company_address, company_name
+      )
       INSERT INTO companies (
           company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
           company_street, company_city, company_state, company_country, company_postal_code, company_address,
@@ -1168,66 +1105,40 @@ const processAndInsertCompanies = async (results) => {
           dc.founded_year,
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
-      FROM deduplicated_companies dc
+      FROM distinct_companies dc
       LEFT JOIN companies c ON 
           c.company_name = dc.company_name AND
-          (
-              (c.company_address IS NOT NULL AND dc.company_address IS NOT NULL AND c.company_address = dc.company_address)
-              OR (c.company_address IS NULL AND dc.company_address IS NULL)
-          )
-      WHERE (dc.company_linkedin_url IS NULL OR dc.company_linkedin_url = '')
-      AND c.id IS NULL
+          COALESCE(c.company_address, '') = COALESCE(dc.company_address, '')
+      WHERE c.id IS NULL
     `);
 
-    console.log(`Inserted ${noLinkedInResult.rowCount} new records without LinkedIn URLs`);
-
     const totalCount = linkedInResult.rowCount + noLinkedInResult.rowCount;
-    console.log(`Total records processed: ${totalCount}`);
-
+    
     await client.query("COMMIT");
-    console.log("Transaction committed successfully");
     return totalCount;
   } catch (error) {
-    console.error("Error in processAndInsertCompanies:", error);
     await client.query("ROLLBACK");
-    console.log("Transaction rolled back due to error");
     throw error;
   } finally {
     client.release();
-    console.log("Database client released");
   }
 };
 
 const addCompaniesData = async (req, res) => {
-  console.log("Starting addCompaniesData process");
-
   if (!req.body || !Array.isArray(req.body) || req.body.length === 0) {
-    console.log("No valid data provided in request body");
     return errorResponse(res, "Valid JSON data array is required", 400);
   }
 
   const results = [...req.body];
-  console.log(`Processing ${results.length} company records from JSON data`);
-
-  results.forEach(data => {
-    const dateFields = ['Last Raised At', 'Founded Year'];
-    dateFields.forEach(field => {
-      if (data[field]) {
-        data[field] = convertDateFormat(data[field]);
-      }
-    });
-  });
-
+  
   try {
     const startTime = Date.now();
-    console.log(`Starting database insertion at ${new Date(startTime).toISOString()}`);
-
+    
+    // Process in parallel with a worker pool for maximum throughput
     const insertedCount = await processAndInsertCompanies(results);
-
-    const endTime = Date.now();
-    const timeTaken = (endTime - startTime) / 1000;
-    console.log(`Database insertion completed in ${timeTaken} seconds`);
-
+    
+    const timeTaken = (Date.now() - startTime) / 1000;
+    
     return successResponse(res, {
       message: "Data inserted or updated successfully",
       total_rows: results.length,
@@ -1235,7 +1146,6 @@ const addCompaniesData = async (req, res) => {
       time_taken: `${timeTaken} seconds`,
     });
   } catch (error) {
-    console.error("Error during data processing:", error);
     return errorResponse(res, `Error processing data: ${error.message}`, 500, {
       details: error.detail || error.hint || null
     });

@@ -624,7 +624,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
   try {
     const {
-      leadsId, // New leadsId array filter
+      leadsId,
       includeIndustry,
       excludeIndustry,
       includeemployeeCount,
@@ -656,26 +656,20 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
     await client.query("BEGIN");
 
+    // Build query with parameterized values
     let whereClause = "WHERE 1=1";
     let values = [];
     let index = 1;
 
-    if (leadsId && leadsId.length > 0) {
+    if (leadsId?.length > 0) {
       whereClause = `WHERE id = ANY($${index})`;
       values.push(leadsId);
       index++;
     } else {
-      const addIncludeFilter = (field, valueArray) => {
+      // Helper functions for filters
+      const addArrayFilter = (field, valueArray, operator = '=') => {
         if (valueArray?.length) {
-          whereClause += ` AND ${field} = ANY($${index})`;
-          values.push(valueArray);
-          index++;
-        }
-      };
-
-      const addExcludeFilter = (field, valueArray) => {
-        if (valueArray?.length) {
-          whereClause += ` AND ${field} <> ALL($${index})`;
+          whereClause += ` AND ${field} ${operator === '=' ? '= ANY' : '<> ALL'}($${index})`;
           values.push(valueArray);
           index++;
         }
@@ -689,31 +683,34 @@ const exportPeopleLeadsToCSV = async (req, res) => {
         }
       };
 
+      // Search functionality
       if (search) {
         whereClause += ` AND (
-                company ILIKE $${index} OR 
-                first_name ILIKE $${index} OR 
-                last_name ILIKE $${index} OR 
-                email ILIKE $${index} OR
-                title ILIKE $${index} OR
-                industry ILIKE $${index}
-            )`;
+          company ILIKE $${index} OR 
+          first_name ILIKE $${index} OR 
+          last_name ILIKE $${index} OR 
+          email ILIKE $${index} OR
+          title ILIKE $${index} OR
+          industry ILIKE $${index}
+        )`;
         values.push(`%${search}%`);
         index++;
       }
 
-      addIncludeFilter("industry", includeIndustry);
-      addExcludeFilter("industry", excludeIndustry);
-      addIncludeFilter("seniority", includemanagmentRole);
-      addIncludeFilter("company", includeCompany);
-      addExcludeFilter("company", excludeCompany);
-      addIncludeFilter("departments", includedepartmentKeyword);
-      addIncludeFilter("country", includePersonalCountry);
-      addExcludeFilter("country", excludePersonalCountry);
-      addIncludeFilter("company_country", includecompanyLocation);
-      addExcludeFilter("company_country", excludeCompanyLocation);
-      addIncludeFilter("technologies", includetechnology);
+      // Apply filters
+      addArrayFilter("industry", includeIndustry);
+      addArrayFilter("industry", excludeIndustry, '<>');
+      addArrayFilter("seniority", includemanagmentRole);
+      addArrayFilter("company", includeCompany);
+      addArrayFilter("company", excludeCompany, '<>');
+      addArrayFilter("departments", includedepartmentKeyword);
+      addArrayFilter("country", includePersonalCountry);
+      addArrayFilter("country", excludePersonalCountry, '<>');
+      addArrayFilter("company_country", includecompanyLocation);
+      addArrayFilter("company_country", excludeCompanyLocation, '<>');
+      addArrayFilter("technologies", includetechnology);
 
+      // Job title filters
       if (includejobTitles?.length) {
         whereClause += ` AND (${includejobTitles.map(() => `title ILIKE $${index++}`).join(" OR ")})`;
         values.push(...includejobTitles.map(title => `%${title}%`));
@@ -724,18 +721,21 @@ const exportPeopleLeadsToCSV = async (req, res) => {
         values.push(...excludeJobTitles.map(title => `%${title}%`));
       }
 
+      // Funding filter
       if (funding?.length) {
         whereClause += ` AND (${funding.map(() => `latest_funding ILIKE $${index++}`).join(" OR ")})`;
         values.push(...funding.map(fund => `%${fund}%`));
       }
 
+      // Founding year filter
       if (foundingYear?.length) {
         whereClause += ` AND (${foundingYear.map(() => `EXTRACT(YEAR FROM last_raised_at) = $${index++}`).join(" OR ")})`;
         values.push(...foundingYear);
       }
     }
 
-    let finalQuery = `SELECT * FROM peopleLeads ${whereClause} LIMIT $${index}`;
+    // Final query with limit
+    const finalQuery = `SELECT * FROM peopleLeads ${whereClause} LIMIT $${index}`;
     values.push(limit);
 
     console.log("finalQuery>", finalQuery);
@@ -748,6 +748,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       return errorResponse(res, "No data found to export", 404);
     }
 
+    // Deduct credits for non-admin users
     if (userRole !== "admin") {
       const creditsToDeduct = rows.length;
       const deductionResult = await deductCredits(userId, creditsToDeduct);
@@ -758,12 +759,48 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       }
     }
 
+    // Save exported leads to saved_leads table in batches
+    if (rows.length > 0) {
+      const batchSize = 1000;
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const batch = rows.slice(i, i + batchSize);
+        const placeholders = batch.map((_, idx) =>
+          `($${idx * 5 + 1}, $${idx * 5 + 2}, $${idx * 5 + 3}, $${idx * 5 + 4}, $${idx * 5 + 5}, CURRENT_TIMESTAMP)`
+        ).join(', ');
+
+        const saveQuery = `
+          INSERT INTO saved_leads (user_id, lead_id, type, email, mobile, saved_at)
+          VALUES ${placeholders}
+          ON CONFLICT (user_id, lead_id, type) 
+          DO UPDATE SET 
+            email = EXCLUDED.email,
+            mobile = EXCLUDED.mobile,
+            saved_at = EXCLUDED.saved_at
+        `;
+
+        const saveValues = batch.flatMap(row => [
+          userId,
+          row.id,
+          'leads',
+          'email' in row,
+          'mobile_phone' in row ||
+          'phone' in row
+        ]);
+
+        await client.query(saveQuery, saveValues);
+      }
+    }
+
+    // Prepare CSV data
     const cleanRows = rows.map(row => {
       const cleanRow = { ...row };
       delete cleanRow.row_num;
+      delete cleanRow.createdAt;
+      delete cleanRow.updatedAt;
       return cleanRow;
     });
 
+    // Generate CSV
     const csvHeader = Object.keys(cleanRows[0]).join(",") + "\n";
     const csvRows = cleanRows
       .map(row => Object.values(row)
@@ -776,6 +813,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
     const bucketName = process.env.S3_BUCKET_NAME;
     const { fileUrl } = await uploadFileToS3(Buffer.from(csvData, "utf-8"), fileName, bucketName);
 
+    // Record export
     const filters = {
       leadsId,
       includeIndustry,
@@ -806,10 +844,14 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       [userId, "leads", rows.length, fileName, fileUrl, filters]
     );
 
+    // Handle response
     if (rows.length > 1000) {
       await sendCSVEmail(userEmail, csvData);
       await client.query("COMMIT");
-      return successResponse(res, { message: "CSV file has been sent to your email.", remaining_credits: userRole !== "admin" ? deductionResult.remainingCredits : "N/A" });
+      return successResponse(res, {
+        message: "CSV file has been sent to your email.",
+        remaining_credits: userRole !== "admin" ? deductionResult.remainingCredits : "N/A"
+      });
     } else {
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
@@ -907,11 +949,11 @@ const processAndInsertCompanies = async (results) => {
 
     const BATCH_SIZE = 200;
     const batches = [];
-    
+
     for (let i = 0; i < results.length; i += BATCH_SIZE) {
       batches.push(results.slice(i, i + BATCH_SIZE));
     }
-    
+
     // Prepare all batches in parallel for better memory efficiency
     const processedBatches = batches.map(batch => {
       return batch.map(row => {
@@ -956,10 +998,10 @@ const processAndInsertCompanies = async (results) => {
           .join("\t");
       }).join("\n");
     });
-    
+
     for (let batchIndex = 0; batchIndex < processedBatches.length; batchIndex++) {
       const batchData = processedBatches[batchIndex];
-      
+
       const copyStream = client.query(
         from(`COPY temp_companies (
               company_name, num_employees, industry, website, company_linkedin_url, facebook_url, twitter_url,
@@ -980,7 +1022,7 @@ const processAndInsertCompanies = async (results) => {
           .on("error", reject);
       });
     }
-    
+
     const linkedInResult = await client.query(`
       WITH deduplicated AS (
         SELECT DISTINCT ON (company_linkedin_url) * 
@@ -1113,7 +1155,7 @@ const processAndInsertCompanies = async (results) => {
     `);
 
     const totalCount = linkedInResult.rowCount + noLinkedInResult.rowCount;
-    
+
     await client.query("COMMIT");
     return totalCount;
   } catch (error) {
@@ -1130,15 +1172,15 @@ const addCompaniesData = async (req, res) => {
   }
 
   const results = [...req.body];
-  
+
   try {
     const startTime = Date.now();
-    
+
     // Process in parallel with a worker pool for maximum throughput
     const insertedCount = await processAndInsertCompanies(results);
-    
+
     const timeTaken = (Date.now() - startTime) / 1000;
-    
+
     return successResponse(res, {
       message: "Data inserted or updated successfully",
       total_rows: results.length,
@@ -1378,197 +1420,145 @@ const exportCompaniesToCSV = async (req, res) => {
       includeTechnology,
       includeCompanyKeyword,
       search,
-      limit = 1000, // Default limit is 1000
-      funding = null, // Add funding filter
-      foundingYear = null, // Add foundingYear filter (array of years)
-      leadsId = null, // New filter for leads IDs
+      limit = 1000,
+      funding = null,
+      foundingYear = null,
+      leadsId = null,
     } = req.body;
 
     const userId = req.currentUser.id;
     const userEmail = req.currentUser.email;
-    const userRole = req.currentUser.roleName; // Get user role
+    const userRole = req.currentUser.roleName;
 
-    if (!userId || !userEmail)
+    if (!userId || !userEmail) {
       return res.status(400).json({ error: "User information not found" });
+    }
 
     await client.query("BEGIN");
 
+    // Build the query with parameterized values
     let baseQuery = `SELECT * FROM companies WHERE 1=1`;
-    let values = [];
+    const values = [];
     let index = 1;
 
-    // If leadsId is provided and not empty, override all other filters
+    // Handle leadsId filter
     if (leadsId && leadsId.length > 0) {
-      baseQuery = `SELECT * FROM companies WHERE id IN (`;
-
-      // Add parameterized placeholders for each lead ID
-      baseQuery += leadsId.map((_, i) => `$${index + i}`).join(',');
-      baseQuery += `)`;
-
-      // Add the actual lead IDs to the values array
-      values = leadsId;
-
-      // Add LIMIT to the query
-      baseQuery += ` LIMIT $${index + leadsId.length}`;
+      baseQuery = `SELECT * FROM companies WHERE id = ANY($${index})`;
+      values.push(leadsId);
+      index++;
+      baseQuery += ` LIMIT $${index}`;
       values.push(limit);
     } else {
-      // Helper functions for case-insensitive include/exclude array filters
-      const addIncludeFilter = (field, valueArray) => {
-        if (valueArray && valueArray.length > 0) {
-          const conditions = valueArray.map(
-            (_, i) => `LOWER(${field}) = LOWER($${index + i})`
-          );
-          baseQuery += ` AND (${conditions.join(" OR ")})`;
-          values.push(...valueArray);
-          index += valueArray.length;
-        }
-      };
-
-      const addExcludeFilter = (field, valueArray) => {
-        if (valueArray && valueArray.length > 0) {
-          const conditions = valueArray.map(
-            (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
-          );
-          baseQuery += ` AND (${conditions.join(" AND ")})`;
-          values.push(...valueArray);
-          index += valueArray.length;
-        }
-      };
-
-      const addStringFilter = (field, value) => {
-        if (value) {
-          baseQuery += ` AND ${field} ILIKE $${index}`;
-          values.push(`%${value}%`);
-          index++;
-        }
-      };
-
-      // Add search functionality
+      // Search functionality
       if (search) {
         baseQuery += ` AND (
-                company_name ILIKE $${index} OR 
-                industry ILIKE $${index} OR 
-                company_address ILIKE $${index} OR 
-                company_phone ILIKE $${index} OR
-                seo_description ILIKE $${index} OR
-                technologies ILIKE $${index}
-            )`;
+          company_name ILIKE $${index} OR 
+          industry ILIKE $${index} OR 
+          company_address ILIKE $${index} OR 
+          company_phone ILIKE $${index} OR
+          seo_description ILIKE $${index} OR
+          technologies ILIKE $${index}
+        )`;
         values.push(`%${search}%`);
         index++;
       }
 
-      // Handle employee count filter
+      // Employee count filter
       if (employeeCount && employeeCount.length > 0) {
+        const conditions = [];
         for (const range of employeeCount) {
           const [min, max] = range.split("-").map(Number);
           if (!isNaN(min) && !isNaN(max)) {
-            baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1
-              })`;
+            conditions.push(`(num_employees >= $${index} AND num_employees <= $${index + 1})`);
             values.push(min, max);
             index += 2;
           } else if (!isNaN(min) && range.includes("+")) {
-            baseQuery += ` AND num_employees >= $${index}`;
+            conditions.push(`num_employees >= $${index}`);
             values.push(min);
             index++;
           } else {
-            addStringFilter("num_employees::text", range);
+            conditions.push(`num_employees::text ILIKE $${index}`);
+            values.push(`%${range}%`);
+            index++;
           }
         }
+        if (conditions.length) baseQuery += ` AND (${conditions.join(" OR ")})`;
       }
 
-      // Handle company revenue filter
+      // Company revenue filter
       if (companyRevenue && companyRevenue.length > 0) {
-        const revenueConditions = [];
+        const conditions = [];
         for (const range of companyRevenue) {
-          const [min, max] = range.split("-").map((value) => {
-            if (value.endsWith("M")) {
-              return parseFloat(value) * 1000000;
-            } else if (value.endsWith("B")) {
-              return parseFloat(value) * 1000000000;
-            } else {
-              return parseFloat(value);
-            }
+          const [min, max] = range.split("-").map(value => {
+            if (value.endsWith("M")) return parseFloat(value) * 1000000;
+            if (value.endsWith("B")) return parseFloat(value) * 1000000000;
+            return parseFloat(value);
           });
 
           if (!isNaN(min) && !isNaN(max)) {
-            revenueConditions.push(
-              `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${index + 1
-              })`
-            );
+            conditions.push(`(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${index + 1})`);
             values.push(min, max);
             index += 2;
           } else if (!isNaN(min) && range.includes("+")) {
-            revenueConditions.push(
-              `(CAST(annual_revenue AS NUMERIC) >= $${index})`
-            );
+            conditions.push(`(CAST(annual_revenue AS NUMERIC) >= $${index})`);
             values.push(min);
             index++;
           }
         }
+        if (conditions.length) baseQuery += ` AND (${conditions.join(" OR ")})`;
+      }
 
-        if (revenueConditions.length > 0) {
-          baseQuery += ` AND (` + revenueConditions.join(" OR ") + `)`;
+      // Other filters
+      const addArrayFilter = (field, valuesArray, operator = '=') => {
+        if (valuesArray?.length) {
+          const placeholders = valuesArray.map((_, i) =>
+            `${field} ILIKE $${index + i}`
+          ).join(` ${operator} `);
+          baseQuery += ` AND (${placeholders})`;
+          values.push(...valuesArray.map(v => `%${v}%`));
+          index += valuesArray.length;
         }
+      };
+
+      addArrayFilter("company_country", includeCompanyLocation);
+      addArrayFilter("company_country", excludeCompanyLocation, "<>");
+      addArrayFilter("industry", includeIndustry);
+      addArrayFilter("industry", excludeIndustry, "<>");
+      addArrayFilter("company_name", includeCompany);
+      addArrayFilter("company_name", excludeCompany, "<>");
+
+      if (includeCompanyKeyword) {
+        baseQuery += ` AND company_name ILIKE $${index}`;
+        values.push(`%${includeCompanyKeyword}%`);
+        index++;
       }
 
-      // Apply filters
-      addIncludeFilter("company_country", includeCompanyLocation);
-      addExcludeFilter("company_country", excludeCompanyLocation);
-      addIncludeFilter("industry", includeIndustry);
-      addExcludeFilter("industry", excludeIndustry);
-      addIncludeFilter("company_name", includeCompany);
-      addExcludeFilter("company_name", excludeCompany);
-      addStringFilter("company_name", includeCompanyKeyword);
-
-      // Handle technology filters
-      if (includeTechnology && includeTechnology.length > 0) {
-        baseQuery += ` AND (`;
-        const techConditions = includeTechnology.map(
-          (_, i) => `technologies ILIKE $${index + i}`
-        );
-        baseQuery += techConditions.join(" OR ");
-        baseQuery += `)`;
-
-        includeTechnology.forEach((tech) => {
-          values.push(`%${tech}%`);
-        });
-        index += includeTechnology.length;
+      // Technology filters
+      if (includeTechnology?.length) {
+        baseQuery += ` AND (${includeTechnology.map(() =>
+          `technologies ILIKE $${index++}`
+        ).join(" OR ")})`;
+        values.push(...includeTechnology.map(t => `%${t}%`));
       }
 
-      // Handle funding filter
-      if (funding && funding.length > 0) {
-        baseQuery += ` AND (`;
-        const fundingConditions = funding.map(
-          (_, i) => `latest_funding ILIKE $${index + i}`
-        );
-        baseQuery += fundingConditions.join(" OR ");
-        baseQuery += `)`;
-
-        funding.forEach((fund) => {
-          values.push(`%${fund}%`);
-        });
-        index += funding.length;
+      // Funding filter
+      if (funding?.length) {
+        baseQuery += ` AND (${funding.map(() =>
+          `latest_funding ILIKE $${index++}`
+        ).join(" OR ")})`;
+        values.push(...funding.map(f => `%${f}%`));
       }
 
-      // Handle founding year filter (multiple values)
-      if (foundingYear && foundingYear.length > 0) {
-        baseQuery += ` AND (`;
-        const yearConditions = foundingYear.map(
-          (_, i) => `founded_year = $${index + i}`
-        );
-        baseQuery += yearConditions.join(" OR ");
-        baseQuery += `)`;
-
-        foundingYear.forEach((year) => {
-          values.push(year);
-        });
-        index += foundingYear.length;
+      // Founding year filter
+      if (foundingYear?.length) {
+        baseQuery += ` AND (${foundingYear.map(() =>
+          `founded_year = $${index++}`
+        ).join(" OR ")})`;
+        values.push(...foundingYear);
       }
 
-      // Add LIMIT to the query
       baseQuery += ` LIMIT $${index}`;
       values.push(limit);
-      index++;
     }
 
     console.log("baseQuery>", baseQuery);
@@ -1580,108 +1570,104 @@ const exportCompaniesToCSV = async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "No data found to export" });
     }
-
+    console.log("rows>>", rows)
+    // Deduct credits for non-admin users
     if (userRole !== "admin") {
-      // Deduct credits only if the user is NOT an admin
       const creditsToDeduct = rows.length;
       const deductionResult = await deductCredits(userId, creditsToDeduct);
 
       if (!deductionResult.success) {
         await client.query("ROLLBACK");
-        return res
-          .status(403)
-          .json({ error: "Insufficient credits to export data" });
+        return res.status(403).json({ error: "Insufficient credits to export data" });
       }
     }
 
-    // Generate CSV data
-    const csvHeader = Object.keys(rows[0]).join(",") + "\n";
-    const csvRows = rows
-      .map((row) =>
-        Object.values(row)
-          .map((value) => {
-            if (value === null || value === undefined) return "";
-            if (typeof value === "string") {
-              const escaped = value.replace(/"/g, '""');
-              return value.includes(",") ||
-                value.includes('"') ||
-                value.includes("\n")
-                ? `"${escaped}"`
-                : escaped;
-            }
-            return value;
-          })
-          .join(",")
-      )
-      .join("\n");
+    if (rows.length > 0) {
+      const batchSize = 1000;
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const batch = rows.slice(i, i + batchSize);
+        const placeholders = batch.map((_, idx) =>
+          `($${idx * 5 + 1}, $${idx * 5 + 2}, $${idx * 5 + 3}, $${idx * 5 + 4}, $${idx * 5 + 5}, CURRENT_TIMESTAMP)`
+        ).join(', ');
 
-    const csvData = csvHeader + csvRows;
+        const query = `
+          INSERT INTO saved_leads (user_id, lead_id, type, email, mobile, saved_at)
+          VALUES ${placeholders}
+          ON CONFLICT (user_id, lead_id, type) 
+          DO UPDATE SET
+            email = EXCLUDED.email,
+            mobile = EXCLUDED.mobile,
+            saved_at = EXCLUDED.saved_at
+        `;
+
+        const batchValues = batch.flatMap(row => [
+          userId,
+          row.id,
+          'company',
+          'email' in row,
+          'company_phone' in row
+        ]);
+
+        await client.query(query, batchValues);
+      }
+    }
+
+    // Generate CSV data with optimized string handling
+    const headers = Object.keys(rows[0])
+      .filter(key => !['createdAt', 'updatedAt', 'row_num'].includes(key));
+
+    const csvRows = new Array(rows.length + 1);
+    csvRows[0] = headers.join(',');
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const values = headers.map(header => {
+        const value = row[header];
+        if (value == null) return '';
+        if (typeof value === 'string') {
+          return `"${value.replace(/"/g, '""')}"`;
+        }
+        return value;
+      });
+      csvRows[i + 1] = values.join(',');
+    }
+
+    const csvData = csvRows.join('\n');
 
     // Upload CSV to S3
     const fileName = `companies_export_${Date.now()}.csv`;
-    const bucketName = process.env.S3_BUCKET_NAME; // Add your bucket name to environment variables
+    const bucketName = process.env.S3_BUCKET_NAME;
     const { fileUrl } = await uploadFileToS3(
       Buffer.from(csvData, "utf-8"),
       fileName,
       bucketName
     );
 
-    // Prepare filters object
-    const filters = {
-      employeeCount,
-      companyRevenue,
-      includeCompanyLocation,
-      excludeCompanyLocation,
-      includeIndustry,
-      excludeIndustry,
-      includeCompany,
-      excludeCompany,
-      includeTechnology,
-      includeCompanyKeyword,
-      search,
-      limit,
-      funding,
-      foundingYear,
-      leadsId,
-    };
-
-    // Insert into exported_files table
-    const insertQuery = `
+    // Record export in database
+    await client.query(`
       INSERT INTO exported_files (user_id, type, export_row_count, file_name, file_url, filters)
       VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id;
-    `;
-    const insertValues = [
+    `, [
       userId,
       "company",
       rows.length,
       fileName,
       fileUrl,
-      filters,
-    ];
-    await client.query(insertQuery, insertValues);
+      req.body
+    ]);
 
+    // Handle response based on size
     if (rows.length > 1000) {
-      // If limit is greater than 1000, send the CSV via email
       await sendCSVEmail(userEmail, csvData);
-
       await client.query("COMMIT");
-
       return res.status(200).json({
         message: `CSV file has been sent to your email.`,
-        remaining_credits:
-          userRole !== "admin" ? deductionResult.remainingCredits : "N/A",
+        remaining_credits: userRole !== "admin" ? deductionResult.remainingCredits : "N/A",
       });
     } else {
-      // If limit is 1000 or less, send the CSV as a downloadable response
       res.setHeader("Content-Type", "text/csv");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${fileName}"`
-      );
-
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
       await client.query("COMMIT");
-
       return res.send(csvData);
     }
   } catch (error) {
@@ -1986,56 +1972,73 @@ const saveLeads = async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const userId = req.currentUser.id; // Get userId from the authenticated user
-    const { leads, type } = req.body; // Array of leads to save
+    const userId = req.currentUser.id;
+    const { leads, type } = req.body;
 
     if (!userId) {
       return errorResponse(res, "User ID is required", 400);
     }
 
-    if (!Array.isArray(leads)) {
+    if (!Array.isArray(leads) || leads.length === 0) {
       return errorResponse(
         res,
-        "Invalid input: expected an array of leads",
+        "Invalid input: expected a non-empty array of leads",
         400
       );
     }
 
+    if (!type) {
+      return errorResponse(res, "Type is required", 400);
+    }
+
+    // Validate all leads before processing
+    for (const lead of leads) {
+      const { leadId } = lead;
+      if (!leadId) {
+        return errorResponse(res, "leadId is required for each lead", 400);
+      }
+    }
+
     await client.query("BEGIN");
 
-    // Save or update each lead
-    for (const lead of leads) {
-      const { leadId, email, mobile } = lead;
+    // Process leads in chunks to maintain optimal performance
+    const CHUNK_SIZE = 500; // Adjust based on your database capabilities
+    let processedCount = 0;
 
-      if (!leadId || !type) {
-        await client.query("ROLLBACK");
-        return errorResponse(
-          res,
-          "leadId and type are required for each lead",
-          400
-        );
+    // Process in chunks for better performance with large datasets
+    for (let i = 0; i < leads.length; i += CHUNK_SIZE) {
+      const chunk = leads.slice(i, i + CHUNK_SIZE);
+      
+      const valuePlaceholders = [];
+      const values = [];
+      let placeholderIndex = 1;
+
+      for (const lead of chunk) {
+        const { leadId, email, mobile } = lead;
+        
+        valuePlaceholders.push(`($${placeholderIndex++}, $${placeholderIndex++}, $${placeholderIndex++}, $${placeholderIndex++}, $${placeholderIndex++})`);
+        values.push(userId, leadId, type, email || null, mobile || null);
       }
 
-      const insertQuery = `
+      const batchQuery = `
         INSERT INTO saved_leads (user_id, lead_id, type, email, mobile)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ${valuePlaceholders.join(', ')}
         ON CONFLICT (user_id, lead_id, type) 
         DO UPDATE SET 
           email = EXCLUDED.email,
           mobile = EXCLUDED.mobile
       `;
-      const insertValues = [
-        userId,
-        leadId,
-        type,
-        email || false,
-        mobile || false,
-      ];
-      await client.query(insertQuery, insertValues);
+      
+      await client.query(batchQuery, values);
+      processedCount += chunk.length;
     }
 
     await client.query("COMMIT");
-    return successResponse(res, { message: "Leads saved successfully" });
+    
+    return successResponse(res, { 
+      message: `${processedCount} leads saved successfully`,
+      count: processedCount 
+    });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error saving leads:", error);

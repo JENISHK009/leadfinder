@@ -234,6 +234,7 @@ export async function getUserPoints(req, res) {
     const activePlanResult = await client.query(activePlanQuery, [userId]);
 
     let activePlan = null;
+    let freeUser = true; // Default to true (no active plan)
 
     if (activePlanResult.rows.length > 0) {
       activePlan = {
@@ -243,6 +244,7 @@ export async function getUserPoints(req, res) {
         starts_at: activePlanResult.rows[0].starts_at,
         ends_at: activePlanResult.rows[0].ends_at,
       };
+      freeUser = false; // User has an active plan, so not a free user
     }
 
     console.log(`Retrieved points and active plan for user ID: ${userId}`);
@@ -250,6 +252,7 @@ export async function getUserPoints(req, res) {
     return successResponse(res, {
       points: userPoints.points,
       active_plan: activePlan, // Include active plan details
+      freeUser: freeUser      // Include freeUser flag
     });
   } catch (error) {
     console.error(

@@ -57,7 +57,7 @@ export const googleAuthCallback = async (req, accessToken, refreshToken, profile
           profile.emails[0].value,
           profile.id,
           roleId,
-          0, // Default credits
+          process.env.FREE_CREDIT, 
           true, // OTP verified for Google signups
           null, // Mobile number
           null, // Password

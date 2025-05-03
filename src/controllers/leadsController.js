@@ -2008,14 +2008,14 @@ const saveLeads = async (req, res) => {
     // Process in chunks for better performance with large datasets
     for (let i = 0; i < leads.length; i += CHUNK_SIZE) {
       const chunk = leads.slice(i, i + CHUNK_SIZE);
-      
+
       const valuePlaceholders = [];
       const values = [];
       let placeholderIndex = 1;
 
       for (const lead of chunk) {
         const { leadId, email, mobile } = lead;
-        
+
         valuePlaceholders.push(`($${placeholderIndex++}, $${placeholderIndex++}, $${placeholderIndex++}, $${placeholderIndex++}, $${placeholderIndex++})`);
         values.push(userId, leadId, type, email || null, mobile || null);
       }
@@ -2028,21 +2028,90 @@ const saveLeads = async (req, res) => {
           email = EXCLUDED.email,
           mobile = EXCLUDED.mobile
       `;
-      
+
       await client.query(batchQuery, values);
       processedCount += chunk.length;
     }
 
     await client.query("COMMIT");
-    
-    return successResponse(res, { 
+
+    return successResponse(res, {
       message: `${processedCount} leads saved successfully`,
-      count: processedCount 
+      count: processedCount
     });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error saving leads:", error);
     return errorResponse(res, "Error saving leads", 500);
+  } finally {
+    client.release();
+  }
+};
+
+const unsaveLeads = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const userId = req.currentUser.id;
+    const { leads, type } = req.body;
+
+    if (!userId) {
+      return errorResponse(res, "User ID is required", 400);
+    }
+
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return errorResponse(
+        res,
+        "Invalid input: expected a non-empty array of leads",
+        400
+      );
+    }
+
+    if (!type) {
+      return errorResponse(res, "Type is required", 400);
+    }
+
+    for (const lead of leads) {
+      const { leadId } = lead;
+      if (!leadId) {
+        return errorResponse(res, "leadId is required for each lead", 400);
+      }
+    }
+
+    await client.query("BEGIN");
+
+    const CHUNK_SIZE = 500;
+    let processedCount = 0;
+
+    for (let i = 0; i < leads.length; i += CHUNK_SIZE) {
+      const chunk = leads.slice(i, i + CHUNK_SIZE);
+
+      const leadIds = chunk.map(lead => lead.leadId);
+
+      const paramPlaceholders = leadIds.map((_, index) => `$${index + 2}`).join(',');
+
+      const batchQuery = `
+        DELETE FROM saved_leads 
+        WHERE user_id = $1 
+        AND type = $${leadIds.length + 2}
+        AND lead_id IN (${paramPlaceholders})
+      `;
+
+      const params = [userId, ...leadIds, type];
+
+      await client.query(batchQuery, params);
+      processedCount += (await client.query(batchQuery, params)).rowCount;
+    }
+
+    await client.query("COMMIT");
+
+    return successResponse(res, {
+      message: `leads unsaved successfully`
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error unsaving leads:", error);
+    return errorResponse(res, "Error unsaving leads", 500);
   } finally {
     client.release();
   }
@@ -2552,6 +2621,7 @@ export {
   getPeopleLeadsDepartmentChartData,
   getExportedFiles,
   saveLeads,
+  unsaveLeads,
   getSavedLeads,
   getselectedLeads,
 };

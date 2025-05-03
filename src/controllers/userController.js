@@ -272,32 +272,44 @@ export async function getUserPoints(req, res) {
 export async function updatePassword(req, res) {
   const { newPassword } = req.body;
 
-  // Validate required field
   if (!newPassword) {
     return errorResponse(res, "New password is required");
   }
 
-  // Get the current user's ID from the JWT token
   const userId = req.currentUser.id;
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Fetch the current user's password from the database
+    // First check if this is a Google-authenticated user
+    const userAuthCheck = await client.query(
+      "SELECT google_id FROM public.users WHERE id = $1",
+      [userId]
+    );
+
+    if (userAuthCheck.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return errorResponse(res, "User not found", 404);
+    }
+
+    if (userAuthCheck.rows[0].google_id) {
+      await client.query("ROLLBACK");
+      return errorResponse(
+        res,
+        "Password cannot be changed for accounts authenticated with Google",
+        400
+      );
+    }
+
+    // Proceed with password update for non-Google users
     const user = await client.query(
       "SELECT password FROM public.users WHERE id = $1 FOR UPDATE",
       [userId]
     );
 
-    if (user.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return errorResponse(res, "User not found", 404);
-    }
-
     const currentHashedPassword = user.rows[0].password;
 
-    // Check if the new password is the same as the current password
     const isSamePassword = await bcrypt.compare(
       newPassword,
       currentHashedPassword

@@ -24,6 +24,7 @@ router.get("/getCompanyChartData", leadsController.getCompanyChartData);
 router.get("/getPeopleLeadsDepartmentChartData", leadsController.getPeopleLeadsDepartmentChartData);
 router.get("/getExportedFiles", leadsController.getExportedFiles);
 router.post("/saveLeads", leadsController.saveLeads);
+router.post("/unsaveLeads", leadsController.unsaveLeads);
 router.get("/getSavedLeads", leadsController.getSavedLeads);
 router.post("/getselectedLeads", leadsController.getselectedLeads);
 

@@ -53,7 +53,7 @@ export async function signup(req, res) {
       (name, email, mobile_number, password, role_id, credits, otp, otp_timestamp) 
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
       RETURNING id, email, role_id, credits`,
-      [name, email, mobileNumber || null, hashedPassword, roleResult.rows[0].id, 0, otp, currentTime]
+      [name, email, mobileNumber || null, hashedPassword, roleResult.rows[0].id, process.env.FREE_CREDIT, otp, currentTime]
     );
 
     const token = generateToken(newUser.rows[0]);

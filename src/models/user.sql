@@ -8,8 +8,9 @@ CREATE TABLE IF NOT EXISTS users (
     credits INT DEFAULT 0,
     role_id INT NOT NULL DEFAULT 2,  -- Default role_id for 'user'
     otp TEXT,                        -- OTP column
+    otp_timestamp TIMESTAMP,         -- Timestamp when OTP was generated
     otp_verified BOOLEAN DEFAULT FALSE,
-    google_id TEXT,                 -- Google ID directly in schema
+    google_id TEXT,                  -- Google ID directly in schema
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE RESTRICT

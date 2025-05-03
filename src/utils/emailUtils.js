@@ -30,54 +30,59 @@ const commonMailOptions = {
     }
 };
 
-export async function sendOtpEmail(email, otp) {
+export async function sendEmail(params) {
+    const { to, subject, text, html, attachments } = params;
+
     const mailOptions = {
         ...commonMailOptions,
-        to: email,
-        subject: 'Your OTP for Verification',
-        text: `Your OTP for verification is: ${otp}\n\nThis OTP is valid for 10 minutes.`,
-        html: `<div>Your verification code: <strong>${otp}</strong></div>`
+        to,
+        subject,
+        text: text || '',
+        html: html || text || '',
+        attachments: attachments || []
     };
 
     try {
         const info = await transporter.sendMail(mailOptions);
-        console.log(`OTP sent successfully to ${email}`, info.messageId);
+        console.log(`Email sent to ${to}`, info.messageId);
         return info;
     } catch (error) {
-        console.error('SMTP Error Details:', {
-            errorCode: error.code,
-            errorMessage: error.message,
+        console.error('SMTP Error:', {
+            code: error.code,
+            message: error.message,
             stack: error.stack
         });
-        throw new Error(`Failed to send OTP email: ${error.message}`);
+        throw error;
     }
 }
 
-export async function sendCSVEmail(toEmail, csvData, fileName = 'leads_export.csv', subject = 'Exported Leads Data', body = 'Please find the attached CSV file containing the exported leads data.') {
-    try {
-        const mailOptions = {
-            ...commonMailOptions,
-            to: toEmail,
-            subject,
-            text: body,
-            html: `
-                <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-                    <p>${body}</p>
-                    <p>If you have any questions about this data, please reply to this email.</p>
-                </div>
-            `,
-            attachments: [{
-                filename: fileName,
-                content: csvData,
-                contentType: 'text/csv'
-            }],
-        };
+export async function sendOtpEmail(email, options = {}) {
+    return sendEmail({
+        to: email,
+        ...options
+    });
+}
 
-        const info = await transporter.sendMail(mailOptions);
-        console.log(`CSV email sent successfully to ${toEmail}`, info.messageId);
-        return info;
-    } catch (error) {
-        console.error("Error sending CSV email:", error);
-        throw new Error("Failed to send CSV email");
-    }
+export async function sendCSVEmail(toEmail, csvData, options = {}) {
+    const defaultOptions = {
+        subject: 'Exported Leads Data',
+        text: 'Please find the attached CSV file containing the exported leads data.',
+        html: `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <p>Please find the attached CSV file containing the exported leads data.</p>
+                <p>If you have any questions about this data, please reply to this email.</p>
+            </div>
+        `,
+        attachments: [{
+            filename: options.fileName || 'leads_export.csv',
+            content: csvData,
+            contentType: 'text/csv'
+        }]
+    };
+
+    return sendEmail({
+        to: toEmail,
+        ...defaultOptions,
+        ...options
+    });
 }

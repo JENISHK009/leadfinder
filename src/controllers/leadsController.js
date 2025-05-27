@@ -10,6 +10,182 @@ const { from, from: copyFrom } = pkg;
 import { deductCredits } from "../servies/userService.js";
 import { uploadFileToS3 } from "../utils/index.js";
 
+const jobTitleMappings = {
+  'CEO': 'Chief Executive Officer',
+  'CFO': 'Chief Financial Officer',
+  'CMO': 'Chief Marketing Officer',
+  'COO': 'Chief Operating Officer',
+  'CTO': 'Chief Technology Officer',
+  'CIO': 'Chief Information Officer',
+  'CHRO': 'Chief Human Resources Officer',
+  'CPO': 'Chief Product Officer',
+  'CSO': 'Chief Strategy Officer',
+  'CDO': 'Chief Data Officer',
+  'CLO': 'Chief Legal Officer',
+  'CAO': 'Chief Administrative Officer',
+  'CCO': 'Chief Commercial Officer',
+  'CXO': 'Chief Experience Officer',
+  'CRO': 'Chief Revenue Officer',
+  'CDAO': 'Chief Data & Analytics Officer',
+  'HR': 'Human Resources',
+  'IT': 'Information Technology',
+  'PR': 'Public Relations',
+  'R&D': 'Research and Development',
+  'QA': 'Quality Assurance',
+  'QC': 'Quality Control',
+  'BD': 'Business Development',
+  'PM': 'Project Manager',
+  'UX': 'User Experience',
+  'UI': 'User Interface',
+  'CSR': 'Customer Service Representative',
+  'PA': 'Personal Assistant',
+  'EA': 'Executive Assistant',
+  'MD': 'Managing Director',
+  'VP': 'Vice President',
+  'AVP': 'Assistant Vice President',
+  'SE': 'Software Engineer',
+  'SDE': 'Software Development Engineer',
+  'ME': 'Mechanical Engineer',
+  'EE': 'Electrical Engineer',
+  'BA': 'Business Analyst',
+  'DA': 'Data Analyst',
+  'DS': 'Data Scientist',
+  'DE': 'Data Engineer',
+  'DBA': 'Database Administrator',
+  'NOC': 'Network Operations Center',
+  'SOC': 'Security Operations Center',
+  'TAM': 'Technical Account Manager',
+  'CA': 'Chartered Accountant',
+  'CPA': 'Certified Public Accountant',
+  'CFA': 'Chartered Financial Analyst',
+  'FP&A': 'Financial Planning and Analysis',
+  'AR': 'Accounts Receivable',
+  'AP': 'Accounts Payable',
+  'AE': 'Account Executive',
+  'AM': 'Account Manager',
+  'SDR': 'Sales Development Representative',
+  'BDR': 'Business Development Representative',
+  'KAM': 'Key Account Manager',
+  'SEM': 'Search Engine Marketing',
+  'SEO': 'Search Engine Optimization',
+  'PPC': 'Pay-Per-Click',
+  'SMM': 'Social Media Manager',
+  'CRM': 'Customer Relationship Manager',
+  'CSM': 'Customer Success Manager',
+  'TSR': 'Technical Support Representative',
+  'SCM': 'Supply Chain Manager',
+  'OM': 'Operations Manager',
+  'WHM': 'Warehouse Manager',
+  'LOM': 'Logistics Manager',
+  'PPM': 'Production Planning Manager',
+  'MM': 'Materials Manager',
+  'GC': 'General Counsel',
+  'DPO': 'Data Protection Officer',
+  'AML Officer': 'Anti-Money Laundering Officer',
+  'CD': 'Creative Director',
+  'AD': 'Art Director',
+  'GD': 'Graphic Designer',
+  'UXD': 'User Experience Designer',
+  'UID': 'User Interface Designer',
+  'VFX': 'Visual Effects Artist',
+  'RN': 'Registered Nurse',
+  'NP': 'Nurse Practitioner',
+  'PT': 'Physical Therapist',
+  'HOD': 'Head of Department',
+  'PPT': 'Primary/Preschool Teacher',
+  'PRT': 'Primary Teacher',
+  'TGT': 'Trained Graduate Teacher',
+  'PGT': 'Post Graduate Teacher',
+  'LMS Admin': 'Learning Management System Administrator',
+  'SME': 'Subject Matter Expert',
+  'VP (Acad.)': 'Vice Principal (Academics)',
+  'PE Teacher': 'Physical Education Teacher',
+  'DOE': 'Director of Education',
+  'QS': 'Quantity Surveyor',
+  'CM': 'Construction Manager',
+  'RE': 'Resident Engineer',
+  'MEP Engineer': 'Mechanical, Electrical, and Plumbing Engineer',
+  'BIM Manager': 'Building Information Modeling Manager',
+  'HSE Officer': 'Health, Safety & Environment Officer',
+  'DGM': 'Deputy General Manager',
+  'SSE': 'Senior Site Engineer',
+  'Sr. Architect': 'Senior Architect',
+  'RM': 'Relationship Manager',
+  'BM': 'Branch Manager',
+  'FC': 'Finance Controller',
+  'IB Analyst': 'Investment Banking Analyst',
+  'AML Analyst': 'Anti-Money Laundering Analyst',
+  'KYC Analyst': 'Know Your Customer Analyst',
+  'Treasury Mgr': 'Treasury Manager',
+  'PE': 'Process Engineer',
+  'QE': 'Quality Engineer',
+  'NPD': 'New Product Development',
+  'MRO': 'Maintenance, Repair & Overhaul',
+  'HOD (Prod.)': 'Head of Production',
+  'QA/QC': 'Quality Assurance / Quality Control',
+  'EHS Manager': 'Environment, Health & Safety Manager',
+  'HOD (Med.)': 'Head of Department (Medical)',
+  'LPN': 'Licensed Practical Nurse',
+  'RT': 'Respiratory Therapist',
+  'OT': 'Occupational Therapist',
+  'MT': 'Medical Technologist',
+  'Lab Tech': 'Laboratory Technician',
+  'MO': 'Medical Officer',
+  'DevOps': 'Development and Operations Engineer',
+  'UI/UX Designer': 'User Interface / User Experience Designer',
+  'SysAdmin': 'System Administrator',
+  'ITSM': 'IT Service Management',
+  'CISO': 'Chief Information Security Officer',
+  'NOC Engineer': 'Network Operations Center Engineer',
+  'SOC Analyst': 'Security Operations Center Analyst',
+  'Cloud Arch.': 'Cloud Architect',
+  'SVP': 'Senior Vice President'
+};
+
+// Create reverse mapping (long to short)
+const reverseMappings = {};
+Object.entries(jobTitleMappings).forEach(([short, long]) => {
+  reverseMappings[long.toLowerCase()] = short;
+});
+
+// Helper function to expand job titles to include both short and long forms
+const expandJobTitles = (jobTitles) => {
+  const expandedTitles = new Set();
+
+  jobTitles.forEach(title => {
+    const titleLower = title.toLowerCase();
+
+    // Add the original title
+    expandedTitles.add(title);
+
+    // Check if it's a short form and add long form
+    const longForm = jobTitleMappings[title];
+    if (longForm) {
+      expandedTitles.add(longForm);
+    }
+
+    // Check if it's a long form and add short form
+    const shortForm = reverseMappings[titleLower];
+    if (shortForm) {
+      expandedTitles.add(shortForm);
+    }
+
+    // Also check for partial matches in mappings
+    Object.entries(jobTitleMappings).forEach(([short, long]) => {
+      if (short.toLowerCase().includes(titleLower) || titleLower.includes(short.toLowerCase())) {
+        expandedTitles.add(short);
+        expandedTitles.add(long);
+      }
+      if (long.toLowerCase().includes(titleLower) || titleLower.includes(long.toLowerCase())) {
+        expandedTitles.add(short);
+        expandedTitles.add(long);
+      }
+    });
+  });
+
+  return Array.from(expandedTitles);
+};
+
 const cleanPhoneNumber = (phone) => {
   if (!phone) return null;
   return phone.replace(/[^\d+]/g, "");
@@ -482,33 +658,38 @@ const getPeopleLeads = async (req, res) => {
     // Handle department keyword filter
     addIncludeFilter("pl.departments", includedepartmentKeyword);
 
-    // Handle job title filters - map to title
+    // Handle job title filters - UPDATED SECTION with expanded matching
     if (includejobTitles && includejobTitles.length > 0) {
+      const expandedIncludeTitles = expandJobTitles(includejobTitles);
+
       baseQuery += ` AND (`;
-      const titleConditions = includejobTitles.map(
+      const titleConditions = expandedIncludeTitles.map(
         (_, i) => `pl.title ILIKE $${index + i}`
       );
       baseQuery += titleConditions.join(" OR ");
       baseQuery += `)`;
 
-      includejobTitles.forEach((title) => {
+      expandedIncludeTitles.forEach((title) => {
         values.push(`%${title}%`);
       });
-      index += includejobTitles.length;
+      index += expandedIncludeTitles.length;
     }
 
+    // Handle exclude job titles - UPDATED SECTION with expanded matching
     if (excludeJobTitles && excludeJobTitles.length > 0) {
+      const expandedExcludeTitles = expandJobTitles(excludeJobTitles);
+
       baseQuery += ` AND (`;
-      const excludeTitleConditions = excludeJobTitles.map(
+      const excludeTitleConditions = expandedExcludeTitles.map(
         (_, i) => `pl.title NOT ILIKE $${index + i}`
       );
       baseQuery += excludeTitleConditions.join(" AND ");
       baseQuery += `)`;
 
-      excludeJobTitles.forEach((title) => {
+      expandedExcludeTitles.forEach((title) => {
         values.push(`%${title}%`);
       });
-      index += excludeJobTitles.length;
+      index += expandedExcludeTitles.length;
     }
 
     // Handle technology filter
@@ -710,15 +891,31 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       addArrayFilter("company_country", excludeCompanyLocation, '<>');
       addArrayFilter("technologies", includetechnology);
 
-      // Job title filters
+      // Job title filters - UPDATED SECTION with expanded matching (same as getPeopleLeads)
       if (includejobTitles?.length) {
-        whereClause += ` AND (${includejobTitles.map(() => `title ILIKE $${index++}`).join(" OR ")})`;
-        values.push(...includejobTitles.map(title => `%${title}%`));
+        const expandedIncludeTitles = expandJobTitles(includejobTitles);
+        
+        whereClause += ` AND (`;
+        const titleConditions = expandedIncludeTitles.map(() => `title ILIKE $${index++}`);
+        whereClause += titleConditions.join(" OR ");
+        whereClause += `)`;
+        
+        expandedIncludeTitles.forEach((title) => {
+          values.push(`%${title}%`);
+        });
       }
 
       if (excludeJobTitles?.length) {
-        whereClause += ` AND (${excludeJobTitles.map(() => `title NOT ILIKE $${index++}`).join(" AND ")})`;
-        values.push(...excludeJobTitles.map(title => `%${title}%`));
+        const expandedExcludeTitles = expandJobTitles(excludeJobTitles);
+        
+        whereClause += ` AND (`;
+        const excludeTitleConditions = expandedExcludeTitles.map(() => `title NOT ILIKE $${index++}`);
+        whereClause += excludeTitleConditions.join(" AND ");
+        whereClause += `)`;
+        
+        expandedExcludeTitles.forEach((title) => {
+          values.push(`%${title}%`);
+        });
       }
 
       // Funding filter
@@ -791,23 +988,16 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       }
     }
 
-    // Prepare CSV data
-    const cleanRows = rows.map(row => {
-      const cleanRow = { ...row };
-      delete cleanRow.row_num;
-      delete cleanRow.createdAt;
-      delete cleanRow.updatedAt;
-      return cleanRow;
-    });
+    // Remove createdAt and updatedAt from all rows
+    const cleanRows = rows.map(({ createdAt, updatedAt, created_at, updated_at, ...rest }) => rest);
 
-    // Generate CSV
+    // Generate CSV - ensure header also excludes createdAt and updatedAt
     const csvHeader = Object.keys(cleanRows[0]).join(",") + "\n";
     const csvRows = cleanRows
       .map(row => Object.values(row)
         .map(value => (value == null ? "" : typeof value === "string" ? `"${value.replace(/"/g, '""')}"` : value))
         .join(","))
       .join("\n");
-
     const csvData = csvHeader + csvRows;
     const fileName = `people_leads_export_${Date.now()}.csv`;
     const bucketName = process.env.S3_BUCKET_NAME;
@@ -1612,9 +1802,9 @@ const exportCompaniesToCSV = async (req, res) => {
       }
     }
 
-    // Generate CSV data with optimized string handling
+    // Generate CSV data with optimized string handling - Remove createdAt and updatedAt
     const headers = Object.keys(rows[0])
-      .filter(key => !['createdAt', 'updatedAt', 'row_num'].includes(key));
+      .filter(key => !['createdAt', 'updatedAt', 'created_at', 'updated_at', 'row_num'].includes(key));
 
     const csvRows = new Array(rows.length + 1);
     csvRows[0] = headers.join(',');

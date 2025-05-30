@@ -765,7 +765,7 @@ const getPeopleLeads = async (req, res) => {
         )
         SELECT * FROM company_grouped 
         WHERE row_num <= $${index}
-        ORDER BY company_linkedin_url, row_num
+        ORDER BY updated_at DESC, company_linkedin_url, row_num
         LIMIT $${index + 1} OFFSET $${index + 2}
       `;
       values.push(perCompany); // Add perCompany value
@@ -775,6 +775,7 @@ const getPeopleLeads = async (req, res) => {
       // If perCompany is not specified, use the base query with pagination
       finalQuery = `
         ${baseQuery}
+        ORDER BY pl.updated_at DESC
         LIMIT $${index} OFFSET $${index + 1}
       `;
       values.push(limit); // Add limit value
@@ -894,12 +895,12 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       // Job title filters - UPDATED SECTION with expanded matching (same as getPeopleLeads)
       if (includejobTitles?.length) {
         const expandedIncludeTitles = expandJobTitles(includejobTitles);
-        
+
         whereClause += ` AND (`;
         const titleConditions = expandedIncludeTitles.map(() => `title ILIKE $${index++}`);
         whereClause += titleConditions.join(" OR ");
         whereClause += `)`;
-        
+
         expandedIncludeTitles.forEach((title) => {
           values.push(`%${title}%`);
         });
@@ -907,12 +908,12 @@ const exportPeopleLeadsToCSV = async (req, res) => {
 
       if (excludeJobTitles?.length) {
         const expandedExcludeTitles = expandJobTitles(excludeJobTitles);
-        
+
         whereClause += ` AND (`;
         const excludeTitleConditions = expandedExcludeTitles.map(() => `title NOT ILIKE $${index++}`);
         whereClause += excludeTitleConditions.join(" AND ");
         whereClause += `)`;
-        
+
         expandedExcludeTitles.forEach((title) => {
           values.push(`%${title}%`);
         });
@@ -1572,7 +1573,7 @@ const getCompanies = async (req, res) => {
 
     // Pagination
     const offset = (page - 1) * limit;
-    baseQuery += ` ORDER BY id ASC LIMIT $${index++} OFFSET $${index++}`;
+    baseQuery += ` ORDER BY created_at DESC LIMIT $${index++} OFFSET $${index++}`;
     values.push(limit, offset);
 
     console.log("baseQuery>", baseQuery);
@@ -2393,10 +2394,53 @@ const getselectedLeads = async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const { type, filters, rowSelection, percomponyContact } = req.body; // New parameters: rowSelection and percomponyContact
+    const { type, filters, rowSelection, percomponyContact, isSaved } = req.body;
+    const user_id = req.currentUser.id;
+
+    console.log("req.body>>", req.body)
 
     if (!type || (type !== 'people' && type !== 'company')) {
       return errorResponse(res, "Invalid type provided. Type must be 'people' or 'company'", 400);
+    }
+
+    // Check if isSaved is true - handle saved leads logic
+    if (isSaved === true) {
+      if (!user_id) {
+        return errorResponse(res, "user_id is required when isSaved is true", 400);
+      }
+
+      await client.query("BEGIN");
+
+      // Determine the saved leads type based on request type
+      const savedLeadsType = type === 'people' ? 'leads' : 'company';
+      const limit = rowSelection || 10; // Default to 10 if not specified
+
+      const savedLeadsQuery = `
+        SELECT lead_id as id 
+        FROM saved_leads 
+        WHERE user_id = $1 AND type = $2 
+        ORDER BY saved_at DESC 
+        LIMIT $3
+      `;
+
+      const { rows } = await client.query(savedLeadsQuery, [user_id, savedLeadsType, limit]);
+
+      if (rows.length === 0) {
+        await client.query("ROLLBACK");
+        return errorResponse(res, "No saved leads found for this user", 404);
+      }
+
+      await client.query("COMMIT");
+
+      // Extract IDs from the result
+      const leadIds = rows.map(row => row.id);
+
+      return successResponse(res, {
+        leadIds,
+        totalSelected: leadIds.length,
+        message: `Selected ${leadIds.length} saved leads`,
+        isSaved: true
+      });
     }
 
     await client.query("BEGIN");
@@ -2497,6 +2541,11 @@ const getselectedLeads = async (req, res) => {
             whereClause += ` AND num_employees >= $${index}`;
             values.push(min);
             index++;
+          } else {
+            // Handle specific values or other formats
+            whereClause += ` AND num_employees::text ILIKE $${index}`;
+            values.push(`%${range}%`);
+            index++;
           }
         }
       }
@@ -2543,27 +2592,33 @@ const getselectedLeads = async (req, res) => {
       // Handle department keyword filter
       addIncludeFilter("departments", includedepartmentKeyword);
 
-      // Handle job title filters
+      // Handle job title filters with expanded matching
       if (includejobTitles && includejobTitles.length > 0) {
+        // If you have expandJobTitles function, use it; otherwise use the basic version
+        const titlesToUse = typeof expandJobTitles === 'function' ? expandJobTitles(includejobTitles) : includejobTitles;
+
         whereClause += ` AND (`;
-        const titleConditions = includejobTitles.map(
+        const titleConditions = titlesToUse.map(
           (_, i) => `title ILIKE $${index + i}`
         );
         whereClause += titleConditions.join(" OR ");
         whereClause += `)`;
-        values.push(...includejobTitles.map(title => `%${title}%`));
-        index += includejobTitles.length;
+        values.push(...titlesToUse.map(title => `%${title}%`));
+        index += titlesToUse.length;
       }
 
       if (excludeJobTitles && excludeJobTitles.length > 0) {
+        // If you have expandJobTitles function, use it; otherwise use the basic version
+        const titlesToExclude = typeof expandJobTitles === 'function' ? expandJobTitles(excludeJobTitles) : excludeJobTitles;
+
         whereClause += ` AND (`;
-        const excludeTitleConditions = excludeJobTitles.map(
+        const excludeTitleConditions = titlesToExclude.map(
           (_, i) => `title NOT ILIKE $${index + i}`
         );
         whereClause += excludeTitleConditions.join(" AND ");
         whereClause += `)`;
-        values.push(...excludeJobTitles.map(title => `%${title}%`));
-        index += excludeJobTitles.length;
+        values.push(...titlesToExclude.map(title => `%${title}%`));
+        index += titlesToExclude.length;
       }
 
       // Handle technology filter
@@ -2598,11 +2653,14 @@ const getselectedLeads = async (req, res) => {
         index += funding.length;
       }
 
-      // Handle founding year filter
+      // Handle founding year filter - Fixed to use companies table join
       if (foundingYear && foundingYear.length > 0) {
+        // Need to join with companies table for founding year
+        tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
+
         whereClause += ` AND (`;
         const yearConditions = foundingYear.map(
-          (_, i) => `EXTRACT(YEAR FROM last_raised_at) = $${index + i}`
+          (_, i) => `c.founded_year = $${index + i}`
         );
         whereClause += yearConditions.join(" OR ");
         whereClause += `)`;
@@ -2742,37 +2800,75 @@ const getselectedLeads = async (req, res) => {
       }
     }
 
-    // Apply percomponyContact only for people leads
+    // Build final query based on rowSelection and percomponyContact logic
     let finalQuery;
+
     if (type === 'people' && percomponyContact && percomponyContact > 0) {
-      finalQuery = `
-        WITH filtered_leads AS (
-          SELECT pl.*
-          FROM peopleLeads pl
-          ${whereClause}
-        ),
-        company_grouped AS (
-          SELECT 
-            fl.*,
-            ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
-          FROM 
-            filtered_leads fl
-        )
-        SELECT id FROM company_grouped 
-        WHERE row_num <= $${index}
-        ORDER BY company_linkedin_url, row_num
-      `;
-      values.push(percomponyContact); // Add percomponyContact value
+      // For people with percomponyContact: select N employees per company
+      if (rowSelection && rowSelection > 0) {
+        // Calculate how many companies we need to get the desired rowSelection
+        const companiesNeeded = Math.ceil(rowSelection / percomponyContact);
+
+        finalQuery = `
+          WITH filtered_leads AS (
+            SELECT ${tableName.includes('LEFT JOIN') ? 'pl.*' : '*'}
+            FROM ${tableName}
+            ${whereClause}
+          ),
+          company_grouped AS (
+            SELECT 
+              fl.*,
+              ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.created_at DESC) as row_num,
+              DENSE_RANK() OVER (ORDER BY fl.company_linkedin_url) as company_rank
+            FROM 
+              filtered_leads fl
+          )
+          SELECT id 
+          FROM company_grouped 
+          WHERE row_num <= $${index} 
+            AND company_rank <= $${index + 1}
+          ORDER BY company_linkedin_url, row_num
+          LIMIT $${index + 2}
+        `;
+        values.push(percomponyContact, companiesNeeded, rowSelection);
+      } else {
+        // Just apply percomponyContact without rowSelection limit
+        finalQuery = `
+          WITH filtered_leads AS (
+            SELECT ${tableName.includes('LEFT JOIN') ? 'pl.*' : '*'}
+            FROM ${tableName}
+            ${whereClause}
+          ),
+          company_grouped AS (
+            SELECT 
+              fl.*,
+              ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
+            FROM 
+              filtered_leads fl
+          )
+          SELECT id 
+          FROM company_grouped 
+          WHERE row_num <= $${index}
+          ORDER BY company_linkedin_url, row_num
+        `;
+        values.push(percomponyContact);
+      }
     } else {
-      // For company leads or when percomponyContact is not applicable
+      // For companies or people without percomponyContact: simple limit
+      const limit = rowSelection || 1000; // Default limit if not specified
+
       finalQuery = `
         SELECT id 
         FROM ${tableName}
         ${whereClause}
+        ORDER BY created_at
         LIMIT $${index}
       `;
-      values.push(rowSelection); // Add rowSelection value
+      values.push(limit);
     }
+
+    console.log("finalQuery>>", finalQuery);
+    console.log("values>>", values);
 
     const { rows } = await client.query(finalQuery, values);
 
@@ -2786,7 +2882,12 @@ const getselectedLeads = async (req, res) => {
     // Extract IDs from the result
     const leadIds = rows.map(row => row.id);
 
-    return successResponse(res, { leadIds });
+    return successResponse(res, {
+      leadIds,
+      totalSelected: leadIds.length,
+      message: `Selected ${leadIds.length} leads${percomponyContact ? ` (max ${percomponyContact} per company)` : ''}`,
+      isSaved: false
+    });
 
   } catch (error) {
     await client.query("ROLLBACK");

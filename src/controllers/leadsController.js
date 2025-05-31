@@ -532,11 +532,10 @@ const getPeopleLeads = async (req, res) => {
       search,
       page = 1,
       limit = 10,
-      perCompany = null,
       funding = null,
       foundingYear = null, // Add foundingYear filter (array of years)
     } = req.body;
-
+    console.log("req.body", req.body)
     let baseQuery = `
       SELECT pl.*, COUNT(*) OVER() AS total_count 
       FROM peopleLeads pl
@@ -748,39 +747,13 @@ const getPeopleLeads = async (req, res) => {
     // Pagination
     const offset = (page - 1) * limit;
 
-    let finalQuery;
-
-    if (perCompany && perCompany > 0) {
-      // If perCompany is specified, use a window function to limit records per company
-      finalQuery = `
-        WITH filtered_leads AS (
-          ${baseQuery}
-        ),
-        company_grouped AS (
-          SELECT 
-            fl.*,
-            ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
-          FROM 
-            filtered_leads fl
-        )
-        SELECT * FROM company_grouped 
-        WHERE row_num <= $${index}
-        ORDER BY updated_at DESC, company_linkedin_url, row_num
-        LIMIT $${index + 1} OFFSET $${index + 2}
-      `;
-      values.push(perCompany); // Add perCompany value
-      values.push(limit); // Add limit value
-      values.push(offset); // Add offset value
-    } else {
-      // If perCompany is not specified, use the base query with pagination
-      finalQuery = `
-        ${baseQuery}
-        ORDER BY pl.updated_at DESC
-        LIMIT $${index} OFFSET $${index + 1}
-      `;
-      values.push(limit); // Add limit value
-      values.push(offset); // Add offset value
-    }
+    let finalQuery = `
+      ${baseQuery}
+      ORDER BY pl.id DESC
+      LIMIT $${index} OFFSET $${index + 1}
+    `;
+    values.push(limit); // Add limit value
+    values.push(offset); // Add offset value
 
     console.log("finalQuery>", finalQuery);
     console.log("values>", values);
@@ -1573,7 +1546,7 @@ const getCompanies = async (req, res) => {
 
     // Pagination
     const offset = (page - 1) * limit;
-    baseQuery += ` ORDER BY created_at DESC LIMIT $${index++} OFFSET $${index++}`;
+    baseQuery += ` ORDER BY id DESC LIMIT $${index++} OFFSET $${index++}`;
     values.push(limit, offset);
 
     console.log("baseQuery>", baseQuery);
@@ -2447,7 +2420,7 @@ const getselectedLeads = async (req, res) => {
 
     let tableName;
     if (type === 'people') {
-      tableName = 'peopleLeads';
+      tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
     } else if (type === 'company') {
       tableName = 'companies';
     }
@@ -2514,36 +2487,36 @@ const getselectedLeads = async (req, res) => {
       // Add search functionality
       if (search) {
         whereClause += ` AND (
-          company ILIKE $${index} OR 
-          first_name ILIKE $${index} OR 
-          last_name ILIKE $${index} OR 
-          email ILIKE $${index} OR
-          title ILIKE $${index} OR
-          industry ILIKE $${index}
+          pl.company ILIKE $${index} OR 
+          pl.first_name ILIKE $${index} OR 
+          pl.last_name ILIKE $${index} OR 
+          pl.email ILIKE $${index} OR
+          pl.title ILIKE $${index} OR
+          pl.industry ILIKE $${index}
         )`;
         values.push(`%${search}%`);
         index++;
       }
 
       // Handle industry filters
-      addIncludeFilter("industry", includeIndustry);
-      addExcludeFilter("industry", excludeIndustry);
+      addIncludeFilter("pl.industry", includeIndustry);
+      addExcludeFilter("pl.industry", excludeIndustry);
 
       // Handle employee count filter
       if (includeemployeeCount && includeemployeeCount.length > 0) {
         for (const range of includeemployeeCount) {
           const [min, max] = range.split("-").map(Number);
           if (!isNaN(min) && !isNaN(max)) {
-            whereClause += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1})`;
+            whereClause += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${index + 1})`;
             values.push(min, max);
             index += 2;
           } else if (!isNaN(min) && range.includes("+")) {
-            whereClause += ` AND num_employees >= $${index}`;
+            whereClause += ` AND pl.num_employees >= $${index}`;
             values.push(min);
             index++;
           } else {
             // Handle specific values or other formats
-            whereClause += ` AND num_employees::text ILIKE $${index}`;
+            whereClause += ` AND pl.num_employees::text ILIKE $${index}`;
             values.push(`%${range}%`);
             index++;
           }
@@ -2566,12 +2539,12 @@ const getselectedLeads = async (req, res) => {
 
           if (!isNaN(min) && !isNaN(max)) {
             revenueConditions.push(
-              `(annual_revenue >= $${index} AND annual_revenue <= $${index + 1})`
+              `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${index + 1})`
             );
             values.push(min, max);
             index += 2;
           } else if (!isNaN(min) && range.includes("+")) {
-            revenueConditions.push(`(annual_revenue >= $${index})`);
+            revenueConditions.push(`(pl.annual_revenue >= $${index})`);
             values.push(min);
             index++;
           }
@@ -2583,23 +2556,22 @@ const getselectedLeads = async (req, res) => {
       }
 
       // Handle management role filter
-      addIncludeFilter("seniority", includemanagmentRole);
+      addIncludeFilter("pl.seniority", includemanagmentRole);
 
       // Handle company filter
-      addIncludeFilter("company", includeCompany);
-      addExcludeFilter("company", excludeCompany);
+      addIncludeFilter("pl.company", includeCompany);
+      addExcludeFilter("pl.company", excludeCompany);
 
       // Handle department keyword filter
-      addIncludeFilter("departments", includedepartmentKeyword);
+      addIncludeFilter("pl.departments", includedepartmentKeyword);
 
       // Handle job title filters with expanded matching
       if (includejobTitles && includejobTitles.length > 0) {
-        // If you have expandJobTitles function, use it; otherwise use the basic version
         const titlesToUse = typeof expandJobTitles === 'function' ? expandJobTitles(includejobTitles) : includejobTitles;
 
         whereClause += ` AND (`;
         const titleConditions = titlesToUse.map(
-          (_, i) => `title ILIKE $${index + i}`
+          (_, i) => `pl.title ILIKE $${index + i}`
         );
         whereClause += titleConditions.join(" OR ");
         whereClause += `)`;
@@ -2608,12 +2580,11 @@ const getselectedLeads = async (req, res) => {
       }
 
       if (excludeJobTitles && excludeJobTitles.length > 0) {
-        // If you have expandJobTitles function, use it; otherwise use the basic version
         const titlesToExclude = typeof expandJobTitles === 'function' ? expandJobTitles(excludeJobTitles) : excludeJobTitles;
 
         whereClause += ` AND (`;
         const excludeTitleConditions = titlesToExclude.map(
-          (_, i) => `title NOT ILIKE $${index + i}`
+          (_, i) => `pl.title NOT ILIKE $${index + i}`
         );
         whereClause += excludeTitleConditions.join(" AND ");
         whereClause += `)`;
@@ -2625,7 +2596,7 @@ const getselectedLeads = async (req, res) => {
       if (includetechnology && includetechnology.length > 0) {
         whereClause += ` AND (`;
         const techConditions = includetechnology.map(
-          (_, i) => `technologies ILIKE $${index + i}`
+          (_, i) => `pl.technologies ILIKE $${index + i}`
         );
         whereClause += techConditions.join(" OR ");
         whereClause += `)`;
@@ -2634,18 +2605,18 @@ const getselectedLeads = async (req, res) => {
       }
 
       // Handle personal country filters
-      addIncludeFilter("country", includePersonalCountry);
-      addExcludeFilter("country", excludePersonalCountry);
+      addIncludeFilter("pl.country", includePersonalCountry);
+      addExcludeFilter("pl.country", excludePersonalCountry);
 
       // Handle company location filters
-      addIncludeFilter("company_country", includecompanyLocation);
-      addExcludeFilter("company_country", excludeCompanyLocation);
+      addIncludeFilter("pl.company_country", includecompanyLocation);
+      addExcludeFilter("pl.company_country", excludeCompanyLocation);
 
       // Handle funding filter
       if (funding && funding.length > 0) {
         whereClause += ` AND (`;
         const fundingConditions = funding.map(
-          (_, i) => `latest_funding ILIKE $${index + i}`
+          (_, i) => `pl.latest_funding ILIKE $${index + i}`
         );
         whereClause += fundingConditions.join(" OR ");
         whereClause += `)`;
@@ -2653,11 +2624,8 @@ const getselectedLeads = async (req, res) => {
         index += funding.length;
       }
 
-      // Handle founding year filter - Fixed to use companies table join
+      // Handle founding year filter
       if (foundingYear && foundingYear.length > 0) {
-        // Need to join with companies table for founding year
-        tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
-
         whereClause += ` AND (`;
         const yearConditions = foundingYear.map(
           (_, i) => `c.founded_year = $${index + i}`
@@ -2802,75 +2770,54 @@ const getselectedLeads = async (req, res) => {
 
     // Build final query based on rowSelection and percomponyContact logic
     let finalQuery;
+    let finalValues = [...values];
 
     if (type === 'people' && percomponyContact && percomponyContact > 0) {
-      // For people with percomponyContact: select N employees per company
-      if (rowSelection && rowSelection > 0) {
-        // Calculate how many companies we need to get the desired rowSelection
-        const companiesNeeded = Math.ceil(rowSelection / percomponyContact);
+      // First get all filtered leads ordered by id DESC
+      // Then apply per-company limit while maintaining the original order
+      finalQuery = `
+        WITH ordered_leads AS (
+          SELECT pl.id, pl.company_linkedin_url
+          FROM ${tableName}
+          ${whereClause}
+          ORDER BY pl.id DESC
+        ),
+        ranked_leads AS (
+          SELECT 
+            id,
+            company_linkedin_url,
+            ROW_NUMBER() OVER (PARTITION BY company_linkedin_url ORDER BY id DESC) as company_row_num
+          FROM ordered_leads
+        )
+        SELECT id
+        FROM ranked_leads
+        WHERE company_row_num <= $${index}
+        ORDER BY id DESC
+        ${rowSelection ? `LIMIT $${index + 1}` : ''}
+      `;
 
-        finalQuery = `
-          WITH filtered_leads AS (
-            SELECT ${tableName.includes('LEFT JOIN') ? 'pl.*' : '*'}
-            FROM ${tableName}
-            ${whereClause}
-          ),
-          company_grouped AS (
-            SELECT 
-              fl.*,
-              ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.created_at DESC) as row_num,
-              DENSE_RANK() OVER (ORDER BY fl.company_linkedin_url) as company_rank
-            FROM 
-              filtered_leads fl
-          )
-          SELECT id 
-          FROM company_grouped 
-          WHERE row_num <= $${index} 
-            AND company_rank <= $${index + 1}
-          ORDER BY company_linkedin_url, row_num
-          LIMIT $${index + 2}
-        `;
-        values.push(percomponyContact, companiesNeeded, rowSelection);
-      } else {
-        // Just apply percomponyContact without rowSelection limit
-        finalQuery = `
-          WITH filtered_leads AS (
-            SELECT ${tableName.includes('LEFT JOIN') ? 'pl.*' : '*'}
-            FROM ${tableName}
-            ${whereClause}
-          ),
-          company_grouped AS (
-            SELECT 
-              fl.*,
-              ROW_NUMBER() OVER (PARTITION BY fl.company_linkedin_url ORDER BY fl.id) as row_num
-            FROM 
-              filtered_leads fl
-          )
-          SELECT id 
-          FROM company_grouped 
-          WHERE row_num <= $${index}
-          ORDER BY company_linkedin_url, row_num
-        `;
-        values.push(percomponyContact);
+      finalValues.push(percomponyContact);
+      if (rowSelection) {
+        finalValues.push(rowSelection);
       }
     } else {
-      // For companies or people without percomponyContact: simple limit
+      // Simple case - just apply rowSelection limit with id DESC sorting
       const limit = rowSelection || 1000; // Default limit if not specified
 
       finalQuery = `
         SELECT id 
         FROM ${tableName}
         ${whereClause}
-        ORDER BY created_at
+        ORDER BY id DESC
         LIMIT $${index}
       `;
-      values.push(limit);
+      finalValues.push(limit);
     }
 
     console.log("finalQuery>>", finalQuery);
-    console.log("values>>", values);
+    console.log("finalValues>>", finalValues);
 
-    const { rows } = await client.query(finalQuery, values);
+    const { rows } = await client.query(finalQuery, finalValues);
 
     if (rows.length === 0) {
       await client.query("ROLLBACK");
@@ -2897,6 +2844,7 @@ const getselectedLeads = async (req, res) => {
     client.release();
   }
 };
+
 
 export {
   addPeopleLeadsData,

@@ -2804,11 +2804,13 @@ const getselectedLeads = async (req, res) => {
       // Simple case - just apply rowSelection limit with id DESC sorting
       const limit = rowSelection || 1000; // Default limit if not specified
 
+      let sorting = type == 'people' ? 'pl.id' : 'c.id'
+
       finalQuery = `
-        SELECT id 
+        SELECT ${sorting} 
         FROM ${tableName}
         ${whereClause}
-        ORDER BY id DESC
+        ORDER BY ${sorting} desc
         LIMIT $${index}
       `;
       finalValues.push(limit);

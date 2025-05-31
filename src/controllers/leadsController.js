@@ -2422,7 +2422,7 @@ const getselectedLeads = async (req, res) => {
     if (type === 'people') {
       tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
     } else if (type === 'company') {
-      tableName = 'companies';
+      tableName = 'companies c';  // Add alias 'c' for companies table
     }
 
     // Build the WHERE clause with all filters

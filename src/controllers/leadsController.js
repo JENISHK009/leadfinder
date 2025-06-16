@@ -186,14 +186,12 @@ const expandJobTitles = (jobTitles) => {
   return Array.from(expandedTitles);
 };
 
-const cleanPhoneNumber = (phone) => {
-  if (!phone) return null;
-  return phone.replace(/[^\d+]/g, "");
-};
+const cleanPhone = (phone) => phone ? phone.replace(/[^\d+]/g, "") : null;
 
-const safeDateString = (dateValue) => {
-  if (!dateValue || dateValue === "" || dateValue === "\\N") return null;
-  return dateValue.toString().trim();
+const parseInteger = (value) => {
+  if (!value || value === "" || value === "\\N") return null;
+  const num = parseInt(value, 10);
+  return isNaN(num) ? null : num;
 };
 
 const safeInteger = (value) => {
@@ -207,16 +205,13 @@ const safeInteger = (value) => {
   return isNaN(num) ? null : num;
 };
 
-const escapeCopyValue = (value) => {
-  if (value === null || value === undefined || value === "") {
-    return "\\N";
-  }
-
+const escapeCopy = (value) => {
+  if (value === null || value === undefined || value === "") return "\\N";
   return value.toString()
-    .replace(/\\/g, "\\\\") // Escape backslashes first
-    .replace(/\t/g, "\\t")  // Escape tabs
-    .replace(/\n/g, "\\n")  // Escape newlines
-    .replace(/\r/g, "\\r"); // Escape carriage returns
+    .replace(/\\/g, "\\\\")
+    .replace(/\t/g, "\\t")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
 };
 
 class JsonToCopyTransform extends Transform {
@@ -226,41 +221,41 @@ class JsonToCopyTransform extends Transform {
 
   _transform(row, encoding, callback) {
     const values = [
-      escapeCopyValue(row["First Name"] || null),
-      escapeCopyValue(row["Last Name"] || null),
-      escapeCopyValue(row["Title"] || null),
-      escapeCopyValue(row["Company"] || null),
-      escapeCopyValue(row["Email"] || null),
-      escapeCopyValue(row["Email Status"] || null),
-      escapeCopyValue(row["Seniority"] || null),
-      escapeCopyValue(row["Departments"] || null),
-      escapeCopyValue(cleanPhoneNumber(row["Work Direct Phone"])),
-      escapeCopyValue(cleanPhoneNumber(row["Mobile Phone"])),
-      escapeCopyValue(cleanPhoneNumber(row["Corporate Phone"])),
-      escapeCopyValue(safeInteger(row["# Employees"])),
-      escapeCopyValue(row["Industry"] || null),
-      escapeCopyValue(row["Keywords"] || null),
-      escapeCopyValue(row["Person Linkedin Url"] || null),
-      escapeCopyValue(row["Website"] || null),
-      escapeCopyValue(row["Company Linkedin Url"] || null),
-      escapeCopyValue(row["Facebook Url"] || null),
-      escapeCopyValue(row["Twitter Url"] || null),
-      escapeCopyValue(row["City"] || null),
-      escapeCopyValue(row["State"] || null),
-      escapeCopyValue(row["Country"] || null),
-      escapeCopyValue(row["Company Address"] || null),
-      escapeCopyValue(row["Company City"] || null),
-      escapeCopyValue(row["Company State"] || null),
-      escapeCopyValue(row["Company Country"] || null),
-      escapeCopyValue(row["SEO Description"] || null),
-      escapeCopyValue(row["Technologies"] || null),
-      escapeCopyValue(row["Annual Revenue"] || null),
-      escapeCopyValue(row["Total Funding"] || null),
-      escapeCopyValue(row["Latest Funding"] || null),
-      escapeCopyValue(row["Latest Funding Amount"] || null),
-      escapeCopyValue(safeDateString(row["Last Raised At"])),
-      escapeCopyValue(safeInteger(row["Number of Retail Locations"]))
-    ].join('\t');
+      row["First Name"] || null,
+      row["Last Name"] || null,
+      row["Title"] || null,
+      row["Company"] || null,
+      row["Email"] || null,
+      row["Email Status"] || null,
+      row["Seniority"] || null,
+      row["Departments"] || null,
+      cleanPhone(row["Work Direct Phone"]),
+      cleanPhone(row["Mobile Phone"]),
+      cleanPhone(row["Corporate Phone"]),
+      parseInteger(row["# Employees"]),
+      row["Industry"] || null,
+      row["Keywords"] || null,
+      row["Person Linkedin Url"] || null,
+      row["Website"] || null,
+      row["Company Linkedin Url"] || null,
+      row["Facebook Url"] || null,
+      row["Twitter Url"] || null,
+      row["City"] || null,
+      row["State"] || null,
+      row["Country"] || null,
+      row["Company Address"] || null,
+      row["Company City"] || null,
+      row["Company State"] || null,
+      row["Company Country"] || null,
+      row["SEO Description"] || null,
+      row["Technologies"] || null,
+      row["Annual Revenue"] || null,
+      row["Total Funding"] || null,
+      row["Latest Funding"] || null,
+      row["Latest Funding Amount"] || null,
+      row["Last Raised At"] || null,
+      parseInteger(row["Number of Retail Locations"])
+    ].map(escapeCopy).join('\t');
 
     this.push(values + '\n');
     callback();
@@ -275,7 +270,6 @@ const processAndInsertLeads = async (jsonData) => {
   try {
     await client.query("BEGIN");
 
-    // Create a temporary table to stage the data
     await client.query(`
       CREATE TEMP TABLE temp_leads (
         id SERIAL,
@@ -329,7 +323,6 @@ const processAndInsertLeads = async (jsonData) => {
     );
 
     const jsonStream = Readable.from(jsonData);
-
     const transformStream = new JsonToCopyTransform();
     jsonStream.pipe(transformStream).pipe(copyStream);
 
@@ -340,109 +333,116 @@ const processAndInsertLeads = async (jsonData) => {
 
     rowCount = totalRows;
 
-    await client.query(`
-      CREATE INDEX temp_company_linkedin_idx ON temp_leads (company_linkedin_url) 
-      WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != '';
-    `);
+    // Create indexes in parallel using Promise.all
+    await Promise.all([
+      client.query(`
+        CREATE INDEX temp_company_linkedin_idx ON temp_leads (company_linkedin_url) 
+        WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != '';
+      `),
+      client.query(`
+        CREATE INDEX temp_linkedin_idx ON temp_leads (linkedin_url) 
+        WHERE linkedin_url IS NOT NULL AND linkedin_url != '';
+      `)
+    ]);
 
-    await client.query(`
-      CREATE INDEX temp_linkedin_idx ON temp_leads (linkedin_url) 
-      WHERE linkedin_url IS NOT NULL AND linkedin_url != '';
-    `);
-
-    await client.query(`
-      WITH distinct_companies AS (
-  SELECT DISTINCT ON (company_linkedin_url)
-    company, num_employees, website, company_linkedin_url,
-    company_address, company_city, company_state, company_country,
-    total_funding, latest_funding, latest_funding_amount, last_raised_at,
-    annual_revenue, num_retail_locations
-  FROM temp_leads
-  WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
-)
-INSERT INTO companies (
-  company_name, num_employees, website, company_linkedin_url,
-  company_street, company_city, company_state, company_country, company_postal_code, company_address,
-  company_phone, total_funding, latest_funding, latest_funding_amount,
-  last_raised_at, annual_revenue, num_retail_locations, sic_codes, founded_year
-)
-SELECT 
-  company, num_employees, website, company_linkedin_url,
-  company_address, company_city, company_state, company_country, NULL, company_address,
-  NULL, total_funding, latest_funding, latest_funding_amount,
-  last_raised_at, annual_revenue, num_retail_locations,
-  NULL, NULL
-FROM distinct_companies
-ON CONFLICT (company_linkedin_url) DO UPDATE SET
-  company_name = EXCLUDED.company_name,
-  num_employees = EXCLUDED.num_employees,
-  website = EXCLUDED.website,
-  company_street = EXCLUDED.company_street,
-  company_city = EXCLUDED.company_city,
-  company_state = EXCLUDED.company_state,
-  company_country = EXCLUDED.company_country,
-  company_address = EXCLUDED.company_address,
-  total_funding = EXCLUDED.total_funding,
-  latest_funding = EXCLUDED.latest_funding,
-  latest_funding_amount = EXCLUDED.latest_funding_amount,
-  last_raised_at = EXCLUDED.last_raised_at,
-  annual_revenue = EXCLUDED.annual_revenue,
-  num_retail_locations = EXCLUDED.num_retail_locations,
-  updated_at = CURRENT_TIMESTAMP
-    `);
-
-    await client.query(`
-      INSERT INTO peopleLeads (
-        first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
-        mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
-        facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
-        seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
-        last_raised_at, num_retail_locations
-      )
-      SELECT 
-        first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
-        mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
-        facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
-        seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
-        last_raised_at, num_retail_locations
-      FROM temp_leads
-      WHERE linkedin_url IS NOT NULL AND linkedin_url != ''
-      ON CONFLICT (linkedin_url) DO UPDATE SET
-        first_name = EXCLUDED.first_name,
-        last_name = EXCLUDED.last_name,
-        title = EXCLUDED.title,
-        company = EXCLUDED.company,
-        email = EXCLUDED.email,
-        email_status = EXCLUDED.email_status,
-        seniority = EXCLUDED.seniority,
-        departments = EXCLUDED.departments,
-        work_direct_phone = EXCLUDED.work_direct_phone,
-        mobile_phone = EXCLUDED.mobile_phone,
-        corporate_phone = EXCLUDED.corporate_phone,
-        num_employees = EXCLUDED.num_employees,
-        industry = EXCLUDED.industry,
-        keywords = EXCLUDED.keywords,
-        website = EXCLUDED.website,
-        company_linkedin_url = EXCLUDED.company_linkedin_url,
-        facebook_url = EXCLUDED.facebook_url,
-        twitter_url = EXCLUDED.twitter_url,
-        city = EXCLUDED.city,
-        state = EXCLUDED.state,
-        country = EXCLUDED.country,
-        company_address = EXCLUDED.company_address,
-        company_city = EXCLUDED.company_city,
-        company_state = EXCLUDED.company_state,
-        company_country = EXCLUDED.company_country,
-        seo_description = EXCLUDED.seo_description,
-        technologies = EXCLUDED.technologies,
-        annual_revenue = EXCLUDED.annual_revenue,
-        total_funding = EXCLUDED.total_funding,
-        latest_funding = EXCLUDED.latest_funding,
-        latest_funding_amount = EXCLUDED.latest_funding_amount,
-        last_raised_at = EXCLUDED.last_raised_at,
-        num_retail_locations = EXCLUDED.num_retail_locations,
-        updated_at = CURRENT_TIMESTAMP
-    `);
+    // Perform both inserts in parallel
+    await Promise.all([
+      // Companies insert
+      client.query(`
+        WITH distinct_companies AS (
+          SELECT DISTINCT ON (company_linkedin_url)
+            company, num_employees, website, company_linkedin_url,
+            company_address, company_city, company_state, company_country,
+            total_funding, latest_funding, latest_funding_amount, last_raised_at,
+            annual_revenue, num_retail_locations
+          FROM temp_leads
+          WHERE company_linkedin_url IS NOT NULL AND company_linkedin_url != ''
+        )
+        INSERT INTO companies (
+          company_name, num_employees, website, company_linkedin_url,
+          company_street, company_city, company_state, company_country, company_postal_code, company_address,
+          company_phone, total_funding, latest_funding, latest_funding_amount,
+          last_raised_at, annual_revenue, num_retail_locations, sic_codes, founded_year
+        )
+        SELECT 
+          company, num_employees, website, company_linkedin_url,
+          company_address, company_city, company_state, company_country, NULL, company_address,
+          NULL, total_funding, latest_funding, latest_funding_amount,
+          last_raised_at, annual_revenue, num_retail_locations,
+          NULL, NULL
+        FROM distinct_companies
+        ON CONFLICT (company_linkedin_url) DO UPDATE SET
+          company_name = EXCLUDED.company_name,
+          num_employees = EXCLUDED.num_employees,
+          website = EXCLUDED.website,
+          company_street = EXCLUDED.company_street,
+          company_city = EXCLUDED.company_city,
+          company_state = EXCLUDED.company_state,
+          company_country = EXCLUDED.company_country,
+          company_address = EXCLUDED.company_address,
+          total_funding = EXCLUDED.total_funding,
+          latest_funding = EXCLUDED.latest_funding,
+          latest_funding_amount = EXCLUDED.latest_funding_amount,
+          last_raised_at = EXCLUDED.last_raised_at,
+          annual_revenue = EXCLUDED.annual_revenue,
+          num_retail_locations = EXCLUDED.num_retail_locations,
+          updated_at = CURRENT_TIMESTAMP
+      `),
+      
+      // People leads insert
+      client.query(`
+        INSERT INTO peopleLeads (
+          first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
+          mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
+          facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
+          seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
+          last_raised_at, num_retail_locations
+        )
+        SELECT 
+          first_name, last_name, title, company, email, email_status, seniority, departments, work_direct_phone,
+          mobile_phone, corporate_phone, num_employees, industry, keywords, linkedin_url, website, company_linkedin_url,
+          facebook_url, twitter_url, city, state, country, company_address, company_city, company_state, company_country,
+          seo_description, technologies, annual_revenue, total_funding, latest_funding, latest_funding_amount,
+          last_raised_at, num_retail_locations
+        FROM temp_leads
+        WHERE linkedin_url IS NOT NULL AND linkedin_url != ''
+        ON CONFLICT (linkedin_url) DO UPDATE SET
+          first_name = EXCLUDED.first_name,
+          last_name = EXCLUDED.last_name,
+          title = EXCLUDED.title,
+          company = EXCLUDED.company,
+          email = EXCLUDED.email,
+          email_status = EXCLUDED.email_status,
+          seniority = EXCLUDED.seniority,
+          departments = EXCLUDED.departments,
+          work_direct_phone = EXCLUDED.work_direct_phone,
+          mobile_phone = EXCLUDED.mobile_phone,
+          corporate_phone = EXCLUDED.corporate_phone,
+          num_employees = EXCLUDED.num_employees,
+          industry = EXCLUDED.industry,
+          keywords = EXCLUDED.keywords,
+          website = EXCLUDED.website,
+          company_linkedin_url = EXCLUDED.company_linkedin_url,
+          facebook_url = EXCLUDED.facebook_url,
+          twitter_url = EXCLUDED.twitter_url,
+          city = EXCLUDED.city,
+          state = EXCLUDED.state,
+          country = EXCLUDED.country,
+          company_address = EXCLUDED.company_address,
+          company_city = EXCLUDED.company_city,
+          company_state = EXCLUDED.company_state,
+          company_country = EXCLUDED.company_country,
+          seo_description = EXCLUDED.seo_description,
+          technologies = EXCLUDED.technologies,
+          annual_revenue = EXCLUDED.annual_revenue,
+          total_funding = EXCLUDED.total_funding,
+          latest_funding = EXCLUDED.latest_funding,
+          latest_funding_amount = EXCLUDED.latest_funding_amount,
+          last_raised_at = EXCLUDED.last_raised_at,
+          num_retail_locations = EXCLUDED.num_retail_locations,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+    ]);
 
     await client.query("COMMIT");
     return rowCount;

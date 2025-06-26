@@ -1136,7 +1136,7 @@ const processAndInsertCompanies = async (results) => {
           row["Company Postal Code"] || "\\N",
           row["Company Address"] || "\\N",
           row["Keywords"] || "\\N",
-          cleanPhoneNumber(row["Company Phone"]) || "\\N",
+          cleanPhone(row["Company Phone"]) || "\\N",
           row["SEO Description"] || "\\N",
           row["Technologies"] || "\\N",
           row["Total Funding"] || "\\N",

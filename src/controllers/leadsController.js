@@ -533,52 +533,74 @@ const getPeopleLeads = async (req, res) => {
       page = 1,
       limit = 10,
       funding = null,
-      foundingYear = null, // Add foundingYear filter (array of years)
+      foundingYear = null,
     } = req.body;
-    console.log("req.body", req.body)
-    let baseQuery = `
-      SELECT pl.*, COUNT(*) OVER() AS total_count 
+
+    // Separate count query for better performance
+    let countQuery = `
+      SELECT COUNT(DISTINCT pl.id) as total_count
       FROM peopleLeads pl
       LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
       WHERE 1=1
     `;
+
+    let baseQuery = `
+      SELECT pl.*
+      FROM peopleLeads pl
+      LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
+      WHERE 1=1
+    `;
+
     let values = [];
+    let countValues = [];
     let index = 1;
 
     // Helper functions for case-insensitive include/exclude array filters
-    const addIncludeFilter = (field, valueArray) => {
+    const addIncludeFilter = (field, valueArray, isCount = false) => {
       if (valueArray && valueArray.length > 0) {
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
-        baseQuery += ` AND (${conditions.join(" OR ")})`;
+        const filterClause = ` AND (${conditions.join(" OR ")})`;
+        baseQuery += filterClause;
+        if (isCount) countQuery += filterClause;
+        
         values.push(...valueArray);
+        if (isCount) countValues.push(...valueArray);
         index += valueArray.length;
       }
     };
 
-    const addExcludeFilter = (field, valueArray) => {
+    const addExcludeFilter = (field, valueArray, isCount = false) => {
       if (valueArray && valueArray.length > 0) {
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
-        baseQuery += ` AND (${conditions.join(" AND ")})`;
+        const filterClause = ` AND (${conditions.join(" AND ")})`;
+        baseQuery += filterClause;
+        if (isCount) countQuery += filterClause;
+        
         values.push(...valueArray);
+        if (isCount) countValues.push(...valueArray);
         index += valueArray.length;
       }
     };
 
-    const addStringFilter = (field, value) => {
+    const addStringFilter = (field, value, isCount = false) => {
       if (value) {
-        baseQuery += ` AND ${field} ILIKE $${index}`;
+        const filterClause = ` AND ${field} ILIKE $${index}`;
+        baseQuery += filterClause;
+        if (isCount) countQuery += filterClause;
+        
         values.push(`%${value}%`);
+        if (isCount) countValues.push(`%${value}%`);
         index++;
       }
     };
 
-    // Add search functionality
+    // Add search functionality with optimized OR conditions
     if (search) {
-      baseQuery += ` AND (
+      const searchClause = ` AND (
                 pl.company ILIKE $${index} OR 
                 pl.first_name ILIKE $${index} OR 
                 pl.last_name ILIKE $${index} OR 
@@ -586,35 +608,49 @@ const getPeopleLeads = async (req, res) => {
                 pl.title ILIKE $${index} OR
                 pl.industry ILIKE $${index}
             )`;
+      baseQuery += searchClause;
+      countQuery += searchClause;
       values.push(`%${search}%`);
+      countValues.push(`%${search}%`);
       index++;
     }
 
     // Handle industry filters
-    addIncludeFilter("pl.industry", includeIndustry);
-    addExcludeFilter("pl.industry", excludeIndustry);
+    addIncludeFilter("pl.industry", includeIndustry, true);
+    addExcludeFilter("pl.industry", excludeIndustry, true);
 
-    // Handle employee count filter - map to num_employees
+    // Handle employee count filter - optimized with proper numeric comparison
     if (includeemployeeCount && includeemployeeCount.length > 0) {
+      const employeeConditions = [];
       for (const range of includeemployeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (pl.num_employees >= $${index} AND pl.num_employees <= $${index + 1
-            })`;
+          employeeConditions.push(`(pl.num_employees >= $${index} AND pl.num_employees <= $${index + 1})`);
           values.push(min, max);
+          countValues.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
-          baseQuery += ` AND pl.num_employees >= $${index}`;
+          employeeConditions.push(`(pl.num_employees >= $${index})`);
           values.push(min);
+          countValues.push(min);
           index++;
         } else {
           // Handle specific values or other formats
-          addStringFilter("pl.num_employees::text", range);
+          employeeConditions.push(`(pl.num_employees::text ILIKE $${index})`);
+          values.push(`%${range}%`);
+          countValues.push(`%${range}%`);
+          index++;
         }
+      }
+      
+      if (employeeConditions.length > 0) {
+        const employeeClause = ` AND (${employeeConditions.join(" OR ")})`;
+        baseQuery += employeeClause;
+        countQuery += employeeClause;
       }
     }
 
-    // Handle revenue filter - map to annual_revenue
+    // Handle revenue filter - optimized with proper numeric comparison
     if (includeRevenue && includeRevenue.length > 0) {
       const revenueConditions = [];
       for (const range of includeRevenue) {
@@ -630,121 +666,136 @@ const getPeopleLeads = async (req, res) => {
 
         if (!isNaN(min) && !isNaN(max)) {
           revenueConditions.push(
-            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${index + 1
-            })`
+            `(pl.annual_revenue >= $${index} AND pl.annual_revenue <= $${index + 1})`
           );
           values.push(min, max);
+          countValues.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
           revenueConditions.push(`(pl.annual_revenue >= $${index})`);
           values.push(min);
+          countValues.push(min);
           index++;
         }
       }
 
       if (revenueConditions.length > 0) {
-        baseQuery += ` AND (` + revenueConditions.join(" OR ") + `)`;
+        const revenueClause = ` AND (${revenueConditions.join(" OR ")})`;
+        baseQuery += revenueClause;
+        countQuery += revenueClause;
       }
     }
 
-    // Handle management role filter - map to seniority
-    addIncludeFilter("pl.seniority", includemanagmentRole);
+    // Handle management role filter
+    addIncludeFilter("pl.seniority", includemanagmentRole, true);
 
     // Handle company filter
-    addIncludeFilter("pl.company", includeCompany);
-    addExcludeFilter("pl.company", excludeCompany);
+    addIncludeFilter("pl.company", includeCompany, true);
+    addExcludeFilter("pl.company", excludeCompany, true);
 
     // Handle department keyword filter
-    addIncludeFilter("pl.departments", includedepartmentKeyword);
+    addIncludeFilter("pl.departments", includedepartmentKeyword, true);
 
-    // Handle job title filters - UPDATED SECTION with expanded matching
+    // Handle job title filters - optimized with expanded matching
     if (includejobTitles && includejobTitles.length > 0) {
       const expandedIncludeTitles = expandJobTitles(includejobTitles);
 
-      baseQuery += ` AND (`;
       const titleConditions = expandedIncludeTitles.map(
         (_, i) => `pl.title ILIKE $${index + i}`
       );
-      baseQuery += titleConditions.join(" OR ");
-      baseQuery += `)`;
+      const titleClause = ` AND (${titleConditions.join(" OR ")})`;
+      baseQuery += titleClause;
+      countQuery += titleClause;
 
       expandedIncludeTitles.forEach((title) => {
         values.push(`%${title}%`);
+        countValues.push(`%${title}%`);
       });
       index += expandedIncludeTitles.length;
     }
 
-    // Handle exclude job titles - UPDATED SECTION with expanded matching
+    // Handle exclude job titles - optimized with expanded matching
     if (excludeJobTitles && excludeJobTitles.length > 0) {
       const expandedExcludeTitles = expandJobTitles(excludeJobTitles);
 
-      baseQuery += ` AND (`;
       const excludeTitleConditions = expandedExcludeTitles.map(
         (_, i) => `pl.title NOT ILIKE $${index + i}`
       );
-      baseQuery += excludeTitleConditions.join(" AND ");
-      baseQuery += `)`;
+      const excludeTitleClause = ` AND (${excludeTitleConditions.join(" AND ")})`;
+      baseQuery += excludeTitleClause;
+      countQuery += excludeTitleClause;
 
       expandedExcludeTitles.forEach((title) => {
         values.push(`%${title}%`);
+        countValues.push(`%${title}%`);
       });
       index += expandedExcludeTitles.length;
     }
 
     // Handle technology filter
     if (includetechnology && includetechnology.length > 0) {
-      baseQuery += ` AND (`;
       const techConditions = includetechnology.map(
         (_, i) => `pl.technologies ILIKE $${index + i}`
       );
-      baseQuery += techConditions.join(" OR ");
-      baseQuery += `)`;
+      const techClause = ` AND (${techConditions.join(" OR ")})`;
+      baseQuery += techClause;
+      countQuery += techClause;
 
       includetechnology.forEach((tech) => {
         values.push(`%${tech}%`);
+        countValues.push(`%${tech}%`);
       });
       index += includetechnology.length;
     }
 
     // Handle personal country filters
-    addIncludeFilter("pl.country", includePersonalCountry);
-    addExcludeFilter("pl.country", excludePersonalCountry);
+    addIncludeFilter("pl.country", includePersonalCountry, true);
+    addExcludeFilter("pl.country", excludePersonalCountry, true);
 
     // Handle company location filters
-    addIncludeFilter("pl.company_country", includecompanyLocation);
-    addExcludeFilter("pl.company_country", excludeCompanyLocation);
+    addIncludeFilter("pl.company_country", includecompanyLocation, true);
+    addExcludeFilter("pl.company_country", excludeCompanyLocation, true);
 
     // Handle funding filter
     if (funding && funding.length > 0) {
-      baseQuery += ` AND (`;
       const fundingConditions = funding.map(
         (_, i) => `pl.latest_funding ILIKE $${index + i}`
       );
-      baseQuery += fundingConditions.join(" OR ");
-      baseQuery += `)`;
+      const fundingClause = ` AND (${fundingConditions.join(" OR ")})`;
+      baseQuery += fundingClause;
+      countQuery += fundingClause;
 
       funding.forEach((fund) => {
         values.push(`%${fund}%`);
+        countValues.push(`%${fund}%`);
       });
       index += funding.length;
     }
 
     // Handle founding year filter (multiple values)
     if (foundingYear && foundingYear.length > 0) {
-      baseQuery += ` AND (`;
       const yearConditions = foundingYear.map(
         (_, i) => `c.founded_year = $${index + i}`
       );
-      baseQuery += yearConditions.join(" OR ");
-      baseQuery += `)`;
+      const yearClause = ` AND (${yearConditions.join(" OR ")})`;
+      baseQuery += yearClause;
+      countQuery += yearClause;
 
       foundingYear.forEach((year) => {
         values.push(year);
+        countValues.push(year);
       });
       index += foundingYear.length;
     }
 
-    // Pagination
+    // Execute count query first (if needed for pagination)
+    let totalCount = 0;
+    if (page > 1 || limit < 100) { // Only run count query when pagination is needed
+      const countResult = await pool.query(countQuery, countValues);
+      totalCount = parseInt(countResult.rows[0].total_count, 10);
+    }
+
+    // Pagination - optimized with proper indexing
     const offset = (page - 1) * limit;
 
     let finalQuery = `
@@ -752,14 +803,19 @@ const getPeopleLeads = async (req, res) => {
       ORDER BY pl.id DESC
       LIMIT $${index} OFFSET $${index + 1}
     `;
-    values.push(limit); // Add limit value
-    values.push(offset); // Add offset value
+    values.push(limit);
+    values.push(offset);
 
     console.log("finalQuery>", finalQuery);
     console.log("values>", values);
 
     const { rows } = await pool.query(finalQuery, values);
-    const totalCount = rows.length > 0 ? parseInt(rows[0].total_count, 10) : 0;
+    
+    // If we didn't run count query earlier, estimate or use rows length
+    if (totalCount === 0) {
+      totalCount = rows.length === limit ? (page * limit) + 1 : (page - 1) * limit + rows.length;
+    }
+    
     const perPageCount = rows.length;
 
     return successResponse(res, {
@@ -1374,48 +1430,75 @@ const getCompanies = async (req, res) => {
       search,
       page = 1,
       limit = 10,
-      funding = null, // Add funding filter
-      foundingYear = null, // Add foundingYear filter (array of years)
+      funding = null,
+      foundingYear = null,
     } = req.body;
 
-    let baseQuery = `SELECT *, COUNT(*) OVER() AS total_count FROM companies WHERE 1=1`;
+    // Separate count and data queries for better performance
+    let countQuery = `SELECT COUNT(*) as total_count FROM companies WHERE 1=1`;
+    let dataQuery = `SELECT * FROM companies WHERE 1=1`;
     let values = [];
+    let countValues = [];
     let index = 1;
 
     // Helper functions for case-insensitive include/exclude array filters
-    const addIncludeFilter = (field, valueArray) => {
+    const addIncludeFilter = (field, valueArray, isCount = false) => {
       if (valueArray && valueArray.length > 0) {
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) = LOWER($${index + i})`
         );
-        baseQuery += ` AND (${conditions.join(" OR ")})`;
-        values.push(...valueArray);
+        const filterClause = ` AND (${conditions.join(" OR ")})`;
+        
+        if (isCount) {
+          countQuery += filterClause;
+          countValues.push(...valueArray);
+        } else {
+          dataQuery += filterClause;
+          values.push(...valueArray);
+        }
         index += valueArray.length;
       }
     };
 
-    const addExcludeFilter = (field, valueArray) => {
+    const addExcludeFilter = (field, valueArray, isCount = false) => {
       if (valueArray && valueArray.length > 0) {
         const conditions = valueArray.map(
           (_, i) => `LOWER(${field}) <> LOWER($${index + i})`
         );
-        baseQuery += ` AND (${conditions.join(" AND ")})`;
-        values.push(...valueArray);
+        const filterClause = ` AND (${conditions.join(" AND ")})`;
+        
+        if (isCount) {
+          countQuery += filterClause;
+          countValues.push(...valueArray);
+        } else {
+          dataQuery += filterClause;
+          values.push(...valueArray);
+        }
         index += valueArray.length;
       }
     };
 
-    const addStringFilter = (field, value) => {
+    const addStringFilter = (field, value, isCount = false) => {
       if (value) {
-        baseQuery += ` AND ${field} ILIKE $${index}`;
-        values.push(`%${value}%`);
+        const filterClause = ` AND ${field} ILIKE $${index}`;
+        
+        if (isCount) {
+          countQuery += filterClause;
+          countValues.push(`%${value}%`);
+        } else {
+          dataQuery += filterClause;
+          values.push(`%${value}%`);
+        }
         index++;
       }
     };
 
+    // Reset index for building filters
+    index = 1;
+
     // Add search functionality
     if (search) {
-      baseQuery += ` AND (
+      const searchClause = ` AND (
                 company_name ILIKE $${index} OR 
                 industry ILIKE $${index} OR 
                 company_address ILIKE $${index} OR 
@@ -1423,35 +1506,49 @@ const getCompanies = async (req, res) => {
                 seo_description ILIKE $${index} OR
                 technologies ILIKE $${index}
             )`;
+      countQuery += searchClause;
+      dataQuery += searchClause;
       values.push(`%${search}%`);
+      countValues.push(`%${search}%`);
       index++;
     }
 
     // Handle employee count filter
     if (employeeCount && employeeCount.length > 0) {
-      const employeeRanges = [];
+      const employeeConditions = [];
+      const employeeParams = [];
 
       for (const range of employeeCount) {
         const [min, max] = range.split("-").map(Number);
         if (!isNaN(min) && !isNaN(max)) {
-          baseQuery += ` AND (num_employees >= $${index} AND num_employees <= $${index + 1
-            })`;
-          values.push(min, max);
+          employeeConditions.push(`(num_employees >= $${index} AND num_employees <= $${index + 1})`);
+          employeeParams.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
-          baseQuery += ` AND num_employees >= $${index}`;
-          values.push(min);
+          employeeConditions.push(`num_employees >= $${index}`);
+          employeeParams.push(min);
           index++;
         } else {
-          // Handle specific values or other formats
-          addStringFilter("num_employees::text", range);
+          employeeConditions.push(`num_employees::text ILIKE $${index}`);
+          employeeParams.push(`%${range}%`);
+          index++;
         }
+      }
+
+      if (employeeConditions.length > 0) {
+        const employeeClause = ` AND (${employeeConditions.join(" OR ")})`;
+        countQuery += employeeClause;
+        dataQuery += employeeClause;
+        values.push(...employeeParams);
+        countValues.push(...employeeParams);
       }
     }
 
     // Handle company revenue filter
     if (companyRevenue && companyRevenue.length > 0) {
       const revenueConditions = [];
+      const revenueParams = [];
+
       for (const range of companyRevenue) {
         const [min, max] = range.split("-").map((value) => {
           if (value.endsWith("M")) {
@@ -1465,102 +1562,132 @@ const getCompanies = async (req, res) => {
 
         if (!isNaN(min) && !isNaN(max)) {
           revenueConditions.push(
-            `(CAST(annual_revenue AS NUMERIC) >= $${index} AND CAST(annual_revenue AS NUMERIC) <= $${index + 1
-            })`
+            `(annual_revenue::numeric >= $${index} AND annual_revenue::numeric <= $${index + 1})`
           );
-          values.push(min, max);
+          revenueParams.push(min, max);
           index += 2;
         } else if (!isNaN(min) && range.includes("+")) {
-          revenueConditions.push(
-            `(CAST(annual_revenue AS NUMERIC) >= $${index})`
-          );
-          values.push(min);
+          revenueConditions.push(`annual_revenue::numeric >= $${index}`);
+          revenueParams.push(min);
           index++;
         }
       }
 
       if (revenueConditions.length > 0) {
-        baseQuery += ` AND (` + revenueConditions.join(" OR ") + `)`;
+        const revenueClause = ` AND (${revenueConditions.join(" OR ")})`;
+        countQuery += revenueClause;
+        dataQuery += revenueClause;
+        values.push(...revenueParams);
+        countValues.push(...revenueParams);
       }
     }
 
     // Handle company location filters
-    addIncludeFilter("company_country", includeCompanyLocation);
-    addExcludeFilter("company_country", excludeCompanyLocation);
+    addIncludeFilter("company_country", includeCompanyLocation, true);
+    addIncludeFilter("company_country", includeCompanyLocation, false);
+    addExcludeFilter("company_country", excludeCompanyLocation, true);
+    addExcludeFilter("company_country", excludeCompanyLocation, false);
 
     // Handle industry filters
-    addIncludeFilter("industry", includeIndustry);
-    addExcludeFilter("industry", excludeIndustry);
+    addIncludeFilter("industry", includeIndustry, true);
+    addIncludeFilter("industry", includeIndustry, false);
+    addExcludeFilter("industry", excludeIndustry, true);
+    addExcludeFilter("industry", excludeIndustry, false);
 
     // Handle company name filters
-    addIncludeFilter("company_name", includeCompany);
-    addExcludeFilter("company_name", excludeCompany);
+    addIncludeFilter("company_name", includeCompany, true);
+    addIncludeFilter("company_name", includeCompany, false);
+    addExcludeFilter("company_name", excludeCompany, true);
+    addExcludeFilter("company_name", excludeCompany, false);
 
     // Handle technology filters
     if (includeTechnology && includeTechnology.length > 0) {
-      baseQuery += ` AND (`;
       const techConditions = includeTechnology.map(
         (_, i) => `technologies ILIKE $${index + i}`
       );
-      baseQuery += techConditions.join(" OR ");
-      baseQuery += `)`;
-
+      const techClause = ` AND (${techConditions.join(" OR ")})`;
+      
+      countQuery += techClause;
+      dataQuery += techClause;
+      
       includeTechnology.forEach((tech) => {
         values.push(`%${tech}%`);
+        countValues.push(`%${tech}%`);
       });
       index += includeTechnology.length;
     }
 
     // Handle company keyword filter
-    addStringFilter("company_name", includeCompanyKeyword);
+    addStringFilter("company_name", includeCompanyKeyword, true);
+    addStringFilter("company_name", includeCompanyKeyword, false);
 
     // Handle funding filter
     if (funding && funding.length > 0) {
-      baseQuery += ` AND (`;
       const fundingConditions = funding.map(
         (_, i) => `latest_funding ILIKE $${index + i}`
       );
-      baseQuery += fundingConditions.join(" OR ");
-      baseQuery += `)`;
-
+      const fundingClause = ` AND (${fundingConditions.join(" OR ")})`;
+      
+      countQuery += fundingClause;
+      dataQuery += fundingClause;
+      
       funding.forEach((fund) => {
         values.push(`%${fund}%`);
+        countValues.push(`%${fund}%`);
       });
       index += funding.length;
     }
 
     // Handle founding year filter (multiple values)
     if (foundingYear && foundingYear.length > 0) {
-      baseQuery += ` AND (`;
       const yearConditions = foundingYear.map(
         (_, i) => `founded_year = $${index + i}`
       );
-      baseQuery += yearConditions.join(" OR ");
-      baseQuery += `)`;
-
+      const yearClause = ` AND (${yearConditions.join(" OR ")})`;
+      
+      countQuery += yearClause;
+      dataQuery += yearClause;
+      
       foundingYear.forEach((year) => {
         values.push(year);
+        countValues.push(year);
       });
       index += foundingYear.length;
     }
 
-    // Pagination
+    // Add pagination and ordering to data query only
     const offset = (page - 1) * limit;
-    baseQuery += ` ORDER BY id DESC LIMIT $${index++} OFFSET $${index++}`;
+    dataQuery += ` ORDER BY id DESC LIMIT $${index++} OFFSET $${index++}`;
     values.push(limit, offset);
 
-    console.log("baseQuery>", baseQuery);
+    console.log("countQuery>", countQuery);
+    console.log("dataQuery>", dataQuery);
+    console.log("countValues>", countValues);
     console.log("values>", values);
 
-    const { rows } = await pool.query(baseQuery, values);
-    const totalCount = rows.length > 0 ? parseInt(rows[0].total_count, 10) : 0;
-    const perPageCount = rows.length;
+    // Execute count query first (usually faster)
+    const countResult = await pool.query(countQuery, countValues);
+    const totalCount = parseInt(countResult.rows[0].total_count, 10);
+
+    // If no results, return early
+    if (totalCount === 0) {
+      return res.status(200).json({
+        message: "Data fetched successfully",
+        total_count: 0,
+        per_page_count: 0,
+        data: [],
+      });
+    }
+
+    // Execute data query only if there are results
+    const dataResult = await pool.query(dataQuery, values);
+    const perPageCount = dataResult.rows.length;
 
     return res.status(200).json({
       message: "Data fetched successfully",
       total_count: totalCount,
       per_page_count: perPageCount,
-      data: rows,
+      data: dataResult.rows,
     });
   } catch (error) {
     console.error("Error fetching companies:", error);

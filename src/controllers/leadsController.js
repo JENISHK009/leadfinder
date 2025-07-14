@@ -2927,6 +2927,84 @@ const getselectedLeads = async (req, res) => {
   }
 };
 
+const deletePeopleLeads = async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return errorResponse(res, "Valid array of IDs is required", 400);
+    }
+
+    await client.query("BEGIN");
+
+    // First delete from saved_leads table to maintain referential integrity
+    await client.query(
+      `DELETE FROM saved_leads WHERE lead_id = ANY($1) AND type = 'leads'`,
+      [ids]
+    );
+
+    // Then delete from peopleLeads table
+    const { rowCount } = await client.query(
+      `DELETE FROM peopleLeads WHERE id = ANY($1)`,
+      [ids]
+    );
+
+    await client.query("COMMIT");
+
+    return successResponse(res, {
+      message: `${rowCount} people leads deleted successfully`,
+      count: rowCount
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error deleting people leads:", error);
+    return errorResponse(res, "Error deleting people leads", 500);
+  } finally {
+    client.release();
+  }
+};
+
+const deleteCompanies = async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return errorResponse(res, "Valid array of IDs is required", 400);
+    }
+
+    await client.query("BEGIN");
+
+    // First delete from saved_leads table to maintain referential integrity
+    await client.query(
+      `DELETE FROM saved_leads WHERE lead_id = ANY($1) AND type = 'company'`,
+      [ids]
+    );
+
+    // Then delete from companies table
+    const { rowCount } = await client.query(
+      `DELETE FROM companies WHERE id = ANY($1)`,
+      [ids]
+    );
+
+    await client.query("COMMIT");
+
+    return successResponse(res, {
+      message: `${rowCount} companies deleted successfully`,
+      count: rowCount
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error deleting companies:", error);
+    return errorResponse(res, "Error deleting companies", 500);
+  } finally {
+    client.release();
+  }
+};
+
 
 export {
   addPeopleLeadsData,
@@ -2945,4 +3023,6 @@ export {
   unsaveLeads,
   getSavedLeads,
   getselectedLeads,
+  deletePeopleLeads,
+  deleteCompanies
 };

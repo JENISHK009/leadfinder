@@ -27,6 +27,9 @@ router.post("/saveLeads", leadsController.saveLeads);
 router.post("/unsaveLeads", leadsController.unsaveLeads);
 router.get("/getSavedLeads", leadsController.getSavedLeads);
 router.post("/getselectedLeads", leadsController.getselectedLeads);
+router.delete("/deleteCompanies", leadsController.deleteCompanies);
+router.delete("/deletePeopleLeads", leadsController.deletePeopleLeads);
+
 
 
 export default router;

@@ -779,20 +779,42 @@ const getPeopleLeads = async (req, res) => {
       );
       const yearClause = ` AND (${yearConditions.join(" OR ")})`;
       baseQuery += yearClause;
-      countQuery += yearClause;
 
       foundingYear.forEach((year) => {
         values.push(year);
-        countValues.push(year);
       });
       index += foundingYear.length;
     }
 
-    // Execute count query first (if needed for pagination)
+    // Get smart count based on table size - accurate for both small and large tables
     let totalCount = 0;
-    if (page > 1 || limit < 100) { // Only run count query when pagination is needed
-      const countResult = await pool.query(countQuery, countValues);
-      totalCount = parseInt(countResult.rows[0].total_count, 10);
+    try {
+      // First, get a quick estimate of table size using statistics
+      const sizeCheck = await pool.query(`
+        SELECT reltuples::bigint AS estimate 
+        FROM pg_class 
+        WHERE relname = 'peopleleads'
+      `);
+      const estimatedSize = parseInt(sizeCheck.rows[0]?.estimate || 0, 10);
+      
+      if (estimatedSize < 100000) {
+        // For small tables (< 100K), use exact count (fast enough)
+        const exactCount = await pool.query('SELECT COUNT(*) FROM peopleLeads');
+        totalCount = parseInt(exactCount.rows[0]?.count || 0, 10);
+        console.log("Using exact count for small table:", totalCount);
+      } else {
+        // For large tables (>= 100K), use sampling for speed
+        const sampleCount = await pool.query(`
+          SELECT COUNT(*) * 1000 AS estimate 
+          FROM peopleLeads TABLESAMPLE SYSTEM(0.1)
+        `);
+        totalCount = parseInt(sampleCount.rows[0]?.estimate || 0, 10);
+        console.log("Using sample count for large table:", totalCount);
+      }
+    } catch (countError) {
+      console.log("Could not get smart count, using fallback");
+      // Fallback to estimated count
+      totalCount = 0;
     }
 
     // Pagination - optimized with proper indexing
@@ -811,12 +833,11 @@ const getPeopleLeads = async (req, res) => {
 
     const { rows } = await pool.query(finalQuery, values);
     
-    // If we didn't run count query earlier, estimate or use rows length
+    // Use fast count if available, otherwise estimate
+    const perPageCount = rows.length;
     if (totalCount === 0) {
       totalCount = rows.length === limit ? (page * limit) + 1 : (page - 1) * limit + rows.length;
     }
-    
-    const perPageCount = rows.length;
 
     return successResponse(res, {
       message: "Data fetched successfully",

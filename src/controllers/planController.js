@@ -313,9 +313,9 @@ const buySubscriptionPlan = async (req, res) => {
       ],
       mode: "payment",
       success_url:
-        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/success",
+        `${process.env.FRONTEND_URL}/callback/success`,
       cancel_url:
-        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/fail",
+        `${process.env.FRONTEND_URL}/callback/fail`,
       metadata: {
         userId,
         planId,
@@ -549,9 +549,9 @@ const purchaseExtraCreditPlan = async (req, res) => {
       ],
       mode: "payment",
       success_url:
-        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/success",
+        `${process.env.FRONTEND_URL}/callback/success`,
       cancel_url:
-        "http://ec2-13-60-209-148.eu-north-1.compute.amazonaws.com/callback/fail",
+        `${process.env.FRONTEND_URL}/callback/fail`,
       metadata: {
         userId,
         credits,

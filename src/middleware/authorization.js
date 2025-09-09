@@ -13,6 +13,21 @@ const authenticateUser = async (req, res, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+        // Handle permanent API tokens
+        if (decoded.type === 'api_key' && decoded.permanent === true) {
+            req.currentUser = {
+                id: 'system',
+                email: 'system@api',
+                roleId: null,
+                roleName: 'system',
+                isApiKey: true,
+                apiKeyName: decoded.name
+            };
+            console.log("API Key authenticated:", req.currentUser);
+            return next();
+        }
+
+        // Handle regular user tokens
         const userQuery = `
             SELECT users.id, users.email, users.role_id, roles.name AS role_name
             FROM users
@@ -31,7 +46,8 @@ const authenticateUser = async (req, res, next) => {
             id: user.id,
             email: user.email,
             roleId: user.role_id,
-            roleName: user.role_name
+            roleName: user.role_name,
+            isApiKey: false
         };
         console.log("req.currentUser", req.currentUser);
 

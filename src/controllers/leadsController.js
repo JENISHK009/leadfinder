@@ -556,7 +556,7 @@ const getPeopleLeads = async (req, res) => {
     console.log("hasFoundingYearFilter:", hasFoundingYearFilter);
     console.log("foundingYear:", foundingYear);
     console.log("includeLinkedinUrl:", includeLinkedinUrl);
-    
+
     // Pre-expand job titles once to avoid repeated calculations
     const expandedIncludeTitles = includejobTitles && includejobTitles.length > 0 ? expandJobTitles(includejobTitles) : null;
     const expandedExcludeTitles = excludeJobTitles && excludeJobTitles.length > 0 ? expandJobTitles(excludeJobTitles) : null;
@@ -584,10 +584,10 @@ const getPeopleLeads = async (req, res) => {
     } else {
       // Strategy 2: Normal LEFT JOIN when no founding year filter
       baseQuery = `
-        SELECT pl.*
-        FROM peopleLeads pl
-        LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
-        WHERE 1=1`;
+      SELECT pl.*
+      FROM peopleLeads pl
+      LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
+      WHERE 1=1`;
     }
 
     // Optimized helper functions for better index usage - avoid LOWER() in queries
@@ -638,17 +638,88 @@ const getPeopleLeads = async (req, res) => {
     }
 
     // Apply filters in optimal order (most selective first)
-    // Industry filter - usually very selective
-    addIncludeFilter("pl.industry", includeIndustry);
-    addExcludeFilter("pl.industry", excludeIndustry);
+    // Industry filter - optimized for exact matching with deduplication
+    if (includeIndustry && includeIndustry.length > 0) {
+      const uniqueIndustries = [...new Set(includeIndustry)];
+      if (uniqueIndustries.length === 1) {
+        baseQuery += ` AND LOWER(pl.industry) = LOWER($${index})`;
+        values.push(uniqueIndustries[0]);
+        index++;
+      } else {
+        const placeholders = uniqueIndustries.map(() => `LOWER($${index++})`).join(', ');
+        baseQuery += ` AND LOWER(pl.industry) = ANY(ARRAY[${placeholders}])`;
+        values.push(...uniqueIndustries);
+      }
+    }
+    
+    if (excludeIndustry && excludeIndustry.length > 0) {
+      const uniqueIndustries = [...new Set(excludeIndustry)];
+      if (uniqueIndustries.length === 1) {
+        baseQuery += ` AND LOWER(pl.industry) <> LOWER($${index})`;
+        values.push(uniqueIndustries[0]);
+        index++;
+      } else {
+        const placeholders = uniqueIndustries.map(() => `LOWER($${index++})`).join(', ');
+        baseQuery += ` AND LOWER(pl.industry) <> ALL(ARRAY[${placeholders}])`;
+        values.push(...uniqueIndustries);
+      }
+    }
 
-    // Country filters - usually selective
-    addIncludeFilter("pl.country", includePersonalCountry);
-    addExcludeFilter("pl.country", excludePersonalCountry);
+    // Country filters - optimized for exact matching with deduplication
+    if (includePersonalCountry && includePersonalCountry.length > 0) {
+      // Remove duplicates and use exact matching instead of ILIKE for better performance
+      const uniqueCountries = [...new Set(includePersonalCountry)];
+      if (uniqueCountries.length === 1) {
+        baseQuery += ` AND LOWER(pl.country) = LOWER($${index})`;
+        values.push(uniqueCountries[0]);
+        index++;
+      } else {
+        const placeholders = uniqueCountries.map(() => `LOWER($${index++})`).join(', ');
+        baseQuery += ` AND LOWER(pl.country) = ANY(ARRAY[${placeholders}])`;
+        values.push(...uniqueCountries);
+      }
+    }
+    
+    if (excludePersonalCountry && excludePersonalCountry.length > 0) {
+      // Remove duplicates for exclude filter too
+      const uniqueCountries = [...new Set(excludePersonalCountry)];
+      if (uniqueCountries.length === 1) {
+        baseQuery += ` AND LOWER(pl.country) <> LOWER($${index})`;
+        values.push(uniqueCountries[0]);
+        index++;
+      } else {
+        const placeholders = uniqueCountries.map(() => `LOWER($${index++})`).join(', ');
+        baseQuery += ` AND LOWER(pl.country) <> ALL(ARRAY[${placeholders}])`;
+        values.push(...uniqueCountries);
+      }
+    }
 
-    // Company location filters
-    addIncludeFilter("pl.company_country", includecompanyLocation);
-    addExcludeFilter("pl.company_country", excludeCompanyLocation);
+    // Company location filters - optimized for exact matching with deduplication
+    if (includecompanyLocation && includecompanyLocation.length > 0) {
+      const uniqueCountries = [...new Set(includecompanyLocation)];
+      if (uniqueCountries.length === 1) {
+        baseQuery += ` AND LOWER(pl.company_country) = LOWER($${index})`;
+        values.push(uniqueCountries[0]);
+        index++;
+      } else {
+        const placeholders = uniqueCountries.map(() => `LOWER($${index++})`).join(', ');
+        baseQuery += ` AND LOWER(pl.company_country) = ANY(ARRAY[${placeholders}])`;
+        values.push(...uniqueCountries);
+      }
+    }
+    
+    if (excludeCompanyLocation && excludeCompanyLocation.length > 0) {
+      const uniqueCountries = [...new Set(excludeCompanyLocation)];
+      if (uniqueCountries.length === 1) {
+        baseQuery += ` AND LOWER(pl.company_country) <> LOWER($${index})`;
+        values.push(uniqueCountries[0]);
+        index++;
+      } else {
+        const placeholders = uniqueCountries.map(() => `LOWER($${index++})`).join(', ');
+        baseQuery += ` AND LOWER(pl.company_country) <> ALL(ARRAY[${placeholders}])`;
+        values.push(...uniqueCountries);
+      }
+    }
 
     // Employee count filter - optimized with proper numeric comparison
     if (includeemployeeCount && includeemployeeCount.length > 0) {
@@ -710,9 +781,48 @@ const getPeopleLeads = async (req, res) => {
     // Management role filter
     addIncludeFilter("pl.seniority", includemanagmentRole);
 
-    // Company filter
-    addIncludeFilter("pl.company", includeCompany);
-    addExcludeFilter("pl.company", excludeCompany);
+    // Company filter - OPTIMIZED with email domain matching and proper indexing
+    if (includeCompany && includeCompany.length > 0) {
+      const uniqueCompanies = [...new Set(includeCompany)];
+      
+      if (uniqueCompanies.length === 1) {
+        // Single company - use UNION approach for better performance
+        const company = uniqueCompanies[0];
+        baseQuery += ` AND pl.id IN (
+          SELECT id FROM peopleLeads WHERE LOWER(company) = LOWER($${index++})
+          UNION
+          SELECT id FROM peopleLeads WHERE email ILIKE $${index++}
+        )`;
+        values.push(company, `%@%${company.toLowerCase()}%`);
+      } else {
+        // Multiple companies - use optimized approach
+        const companyPlaceholders = uniqueCompanies.map(() => `LOWER($${index++})`).join(', ');
+        const emailConditions = uniqueCompanies.map(() => `email ILIKE $${index++}`).join(' OR ');
+        
+        baseQuery += ` AND (LOWER(pl.company) = ANY(ARRAY[${companyPlaceholders}]) OR (${emailConditions}))`;
+        values.push(...uniqueCompanies);
+        values.push(...uniqueCompanies.map(company => `%@%${company.toLowerCase()}%`));
+      }
+    }
+    
+    if (excludeCompany && excludeCompany.length > 0) {
+      const uniqueCompanies = [...new Set(excludeCompany)];
+      const excludeConditions = [];
+      
+      for (const company of uniqueCompanies) {
+        // Exclude exact company name match
+        excludeConditions.push(`LOWER(pl.company) <> LOWER($${index++})`);
+        values.push(company);
+        
+        // Exclude email domain match
+        excludeConditions.push(`pl.email NOT ILIKE $${index++}`);
+        values.push(`%@%${company.toLowerCase()}%`);
+      }
+      
+      if (excludeConditions.length > 0) {
+        baseQuery += ` AND (${excludeConditions.join(' AND ')})`;
+      }
+    }
 
     // Department keyword filter
     addIncludeFilter("pl.departments", includedepartmentKeyword);
@@ -843,6 +953,10 @@ const getPeopleLeads = async (req, res) => {
 
     console.log("=== QUERY DEBUG INFO ===");
     console.log("hasFoundingYearFilter:", hasFoundingYearFilter);
+    console.log("includePersonalCountry:", includePersonalCountry);
+    console.log("uniqueCountries:", includePersonalCountry ? [...new Set(includePersonalCountry)] : null);
+    console.log("includeCompany:", includeCompany);
+    console.log("uniqueCompanies:", includeCompany ? [...new Set(includeCompany)] : null);
     console.log("finalQuery>", baseQuery);
     console.log("values>", values);
     console.log("========================");
@@ -952,8 +1066,44 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       addArrayFilter("industry", includeIndustry);
       addArrayFilter("industry", excludeIndustry, '<>');
       addArrayFilter("seniority", includemanagmentRole);
-      addArrayFilter("company", includeCompany);
-      addArrayFilter("company", excludeCompany, '<>');
+      // Company filter with email domain matching - optimized
+      if (includeCompany?.length) {
+        const uniqueCompanies = [...new Set(includeCompany)];
+        const companyConditions = [];
+        
+        for (const company of uniqueCompanies) {
+          // Exact company name match
+          companyConditions.push(`LOWER(company) = LOWER($${index++})`);
+          values.push(company);
+          
+          // Email domain match
+          companyConditions.push(`email ILIKE $${index++}`);
+          values.push(`%@%${company.toLowerCase()}%`);
+        }
+        
+        if (companyConditions.length > 0) {
+          whereClause += ` AND (${companyConditions.join(' OR ')})`;
+        }
+      }
+      
+      if (excludeCompany?.length) {
+        const uniqueCompanies = [...new Set(excludeCompany)];
+        const excludeConditions = [];
+        
+        for (const company of uniqueCompanies) {
+          // Exclude exact company name
+          excludeConditions.push(`LOWER(company) <> LOWER($${index++})`);
+          values.push(company);
+          
+          // Exclude email domain
+          excludeConditions.push(`email NOT ILIKE $${index++}`);
+          values.push(`%@%${company.toLowerCase()}%`);
+        }
+        
+        if (excludeConditions.length > 0) {
+          whereClause += ` AND (${excludeConditions.join(' AND ')})`;
+        }
+      }
       addArrayFilter("departments", includedepartmentKeyword);
       addArrayFilter("country", includePersonalCountry);
       addArrayFilter("country", excludePersonalCountry, '<>');
@@ -2566,7 +2716,7 @@ const getselectedLeads = async (req, res) => {
       if (hasFoundingYearFilter) {
         tableName = 'peopleLeads pl INNER JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
       } else {
-        tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
+      tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
       }
     } else if (type === 'company') {
       tableName = 'companies c';  // Add alias 'c' for companies table
@@ -2706,9 +2856,44 @@ const getselectedLeads = async (req, res) => {
       // Handle management role filter
       addIncludeFilter("pl.seniority", includemanagmentRole);
 
-      // Handle company filter
-      addIncludeFilter("pl.company", includeCompany);
-      addExcludeFilter("pl.company", excludeCompany);
+      // Handle company filter with email domain matching - optimized
+      if (includeCompany && includeCompany.length > 0) {
+        const uniqueCompanies = [...new Set(includeCompany)];
+        const companyConditions = [];
+        
+        for (const company of uniqueCompanies) {
+          // Exact company name match
+          companyConditions.push(`LOWER(pl.company) = LOWER($${index++})`);
+          values.push(company);
+          
+          // Email domain match
+          companyConditions.push(`pl.email ILIKE $${index++}`);
+          values.push(`%@%${company.toLowerCase()}%`);
+        }
+        
+        if (companyConditions.length > 0) {
+          whereClause += ` AND (${companyConditions.join(' OR ')})`;
+        }
+      }
+      
+      if (excludeCompany && excludeCompany.length > 0) {
+        const uniqueCompanies = [...new Set(excludeCompany)];
+        const excludeConditions = [];
+        
+        for (const company of uniqueCompanies) {
+          // Exclude exact company name
+          excludeConditions.push(`LOWER(pl.company) <> LOWER($${index++})`);
+          values.push(company);
+          
+          // Exclude email domain
+          excludeConditions.push(`pl.email NOT ILIKE $${index++}`);
+          values.push(`%@%${company.toLowerCase()}%`);
+        }
+        
+        if (excludeConditions.length > 0) {
+          whereClause += ` AND (${excludeConditions.join(' AND ')})`;
+        }
+      }
 
       // Handle department keyword filter
       addIncludeFilter("pl.departments", includedepartmentKeyword);

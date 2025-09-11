@@ -546,6 +546,7 @@ const getPeopleLeads = async (req, res) => {
       limit = 10,
       funding = null,
       foundingYear = null,
+      includeLinkedinUrl = null,
     } = req.body;
     
     // Initialize variables and check filters first
@@ -554,6 +555,7 @@ const getPeopleLeads = async (req, res) => {
     console.log("req.body", req.body);
     console.log("hasFoundingYearFilter:", hasFoundingYearFilter);
     console.log("foundingYear:", foundingYear);
+    console.log("includeLinkedinUrl:", includeLinkedinUrl);
     
     // Pre-expand job titles once to avoid repeated calculations
     const expandedIncludeTitles = includejobTitles && includejobTitles.length > 0 ? expandJobTitles(includejobTitles) : null;
@@ -768,6 +770,46 @@ const getPeopleLeads = async (req, res) => {
       values.push(...foundingYear);
     }
 
+    // LinkedIn URL filter - supports both exact match and partial match with trailing slash normalization
+    if (includeLinkedinUrl && includeLinkedinUrl.length > 0) {
+      if (includeLinkedinUrl.length === 1) {
+        // Single LinkedIn URL - check if it's exact match or partial search
+        const linkedinUrl = includeLinkedinUrl[0];
+        if (linkedinUrl.startsWith('http') && linkedinUrl.includes('linkedin.com')) {
+          // Exact LinkedIn URL match with trailing slash handling
+          const normalizedUrl = linkedinUrl.endsWith('/') ? linkedinUrl.slice(0, -1) : linkedinUrl;
+          const urlWithSlash = normalizedUrl + '/';
+          baseQuery += ` AND (pl.linkedin_url = $${index} OR pl.linkedin_url = $${index + 1})`;
+          values.push(normalizedUrl, urlWithSlash);
+          index += 2;
+        } else {
+          // Partial search within LinkedIn URLs
+          baseQuery += ` AND pl.linkedin_url ILIKE $${index}`;
+          values.push(`%${linkedinUrl}%`);
+          index++;
+        }
+      } else {
+        // Multiple LinkedIn URLs - use OR conditions
+        const linkedinConditions = [];
+        for (const linkedinUrl of includeLinkedinUrl) {
+          if (linkedinUrl.startsWith('http') && linkedinUrl.includes('linkedin.com')) {
+            // Exact match with trailing slash handling
+            const normalizedUrl = linkedinUrl.endsWith('/') ? linkedinUrl.slice(0, -1) : linkedinUrl;
+            const urlWithSlash = normalizedUrl + '/';
+            linkedinConditions.push(`(pl.linkedin_url = $${index++} OR pl.linkedin_url = $${index++})`);
+            values.push(normalizedUrl, urlWithSlash);
+          } else {
+            // Partial match
+            linkedinConditions.push(`pl.linkedin_url ILIKE $${index++}`);
+            values.push(`%${linkedinUrl}%`);
+          }
+        }
+        if (linkedinConditions.length > 0) {
+          baseQuery += ` AND (${linkedinConditions.join(' OR ')})`;
+        }
+      }
+    }
+
     // Fast count estimation for large datasets
     const offset = (page - 1) * limit;
     let totalCount = 0;
@@ -853,6 +895,7 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       perCompany = null,
       funding = null,
       foundingYear = null,
+      includeLinkedinUrl = null,
     } = req.body;
 
     const userId = req.currentUser.id;
@@ -955,6 +998,27 @@ const exportPeopleLeadsToCSV = async (req, res) => {
       if (foundingYear?.length) {
         whereClause += ` AND (${foundingYear.map(() => `EXTRACT(YEAR FROM last_raised_at) = $${index++}`).join(" OR ")})`;
         values.push(...foundingYear);
+      }
+
+      // LinkedIn URL filter with trailing slash normalization
+      if (includeLinkedinUrl?.length) {
+        const linkedinConditions = [];
+        for (const linkedinUrl of includeLinkedinUrl) {
+          if (linkedinUrl.startsWith('http') && linkedinUrl.includes('linkedin.com')) {
+            // Exact match with trailing slash handling
+            const normalizedUrl = linkedinUrl.endsWith('/') ? linkedinUrl.slice(0, -1) : linkedinUrl;
+            const urlWithSlash = normalizedUrl + '/';
+            linkedinConditions.push(`(linkedin_url = $${index++} OR linkedin_url = $${index++})`);
+            values.push(normalizedUrl, urlWithSlash);
+          } else {
+            // Partial match
+            linkedinConditions.push(`linkedin_url ILIKE $${index++}`);
+            values.push(`%${linkedinUrl}%`);
+          }
+        }
+        if (linkedinConditions.length > 0) {
+          whereClause += ` AND (${linkedinConditions.join(" OR ")})`;
+        }
       }
     }
 
@@ -2565,6 +2629,7 @@ const getselectedLeads = async (req, res) => {
         search,
         funding,
         foundingYear,
+        includeLinkedinUrl,
       } = filters;
 
       // Add search functionality
@@ -2705,6 +2770,27 @@ const getselectedLeads = async (req, res) => {
         whereClause += `)`;
         values.push(...funding.map(fund => `%${fund}%`));
         index += funding.length;
+      }
+
+      // Handle LinkedIn URL filter with trailing slash normalization
+      if (includeLinkedinUrl && includeLinkedinUrl.length > 0) {
+        whereClause += ` AND (`;
+        const linkedinConditions = [];
+        for (const linkedinUrl of includeLinkedinUrl) {
+          if (linkedinUrl.startsWith('http') && linkedinUrl.includes('linkedin.com')) {
+            // Exact match with trailing slash handling
+            const normalizedUrl = linkedinUrl.endsWith('/') ? linkedinUrl.slice(0, -1) : linkedinUrl;
+            const urlWithSlash = normalizedUrl + '/';
+            linkedinConditions.push(`(pl.linkedin_url = $${index++} OR pl.linkedin_url = $${index++})`);
+            values.push(normalizedUrl, urlWithSlash);
+          } else {
+            // Partial match
+            linkedinConditions.push(`pl.linkedin_url ILIKE $${index++}`);
+            values.push(`%${linkedinUrl}%`);
+          }
+        }
+        whereClause += linkedinConditions.join(" OR ");
+        whereClause += `)`;
       }
 
       // Handle founding year filter

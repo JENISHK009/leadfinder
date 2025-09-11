@@ -547,20 +547,46 @@ const getPeopleLeads = async (req, res) => {
       funding = null,
       foundingYear = null,
     } = req.body;
-
+    
+    // Initialize variables and check filters first
+    const hasFoundingYearFilter = foundingYear && foundingYear.length > 0;
+    
+    console.log("req.body", req.body);
+    console.log("hasFoundingYearFilter:", hasFoundingYearFilter);
+    console.log("foundingYear:", foundingYear);
+    
     // Pre-expand job titles once to avoid repeated calculations
     const expandedIncludeTitles = includejobTitles && includejobTitles.length > 0 ? expandJobTitles(includejobTitles) : null;
     const expandedExcludeTitles = excludeJobTitles && excludeJobTitles.length > 0 ? expandJobTitles(excludeJobTitles) : null;
 
-    // Build optimized query
-    let baseQuery = `
-      SELECT pl.*
-      FROM peopleLeads pl
-      LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
-      WHERE 1=1`;
-
+    // Initialize variables first
     let values = [];
     let index = 1;
+    
+    // Build optimized query - Use different strategies based on filters
+    let baseQuery;
+    
+    if (hasFoundingYearFilter) {
+      // Strategy 1: Ultra-optimized for founding year - pre-filter with IN clause
+      const placeholders = foundingYear.map(() => `$${index++}`).join(', ');
+      baseQuery = `
+        SELECT pl.*
+        FROM peopleLeads pl
+        WHERE pl.company_linkedin_url IN (
+          SELECT company_linkedin_url 
+          FROM companies 
+          WHERE founded_year = ANY(ARRAY[${placeholders}]::integer[])
+            AND company_linkedin_url IS NOT NULL
+        )`;
+      values.push(...foundingYear);
+    } else {
+      // Strategy 2: Normal LEFT JOIN when no founding year filter
+      baseQuery = `
+        SELECT pl.*
+        FROM peopleLeads pl
+        LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url
+        WHERE 1=1`;
+    }
 
     // Optimized helper functions for better index usage - avoid LOWER() in queries
     const addIncludeFilter = (field, valueArray) => {
@@ -735,8 +761,8 @@ const getPeopleLeads = async (req, res) => {
       }
     }
 
-    // Handle founding year filter (multiple values)
-    if (foundingYear && foundingYear.length > 0) {
+    // Handle founding year filter (multiple values) - Skip if already handled in EXISTS clause
+    if (!hasFoundingYearFilter && foundingYear && foundingYear.length > 0) {
       const placeholders = foundingYear.map(() => `$${index++}`).join(', ');
       baseQuery += ` AND c.founded_year = ANY(ARRAY[${placeholders}]::integer[])`;
       values.push(...foundingYear);
@@ -773,8 +799,11 @@ const getPeopleLeads = async (req, res) => {
     
     values.push(limit, offset);
 
+    console.log("=== QUERY DEBUG INFO ===");
+    console.log("hasFoundingYearFilter:", hasFoundingYearFilter);
     console.log("finalQuery>", baseQuery);
     console.log("values>", values);
+    console.log("========================");
 
     const { rows } = await pool.query(baseQuery, values);
     const perPageCount = rows.length;
@@ -2468,7 +2497,13 @@ const getselectedLeads = async (req, res) => {
 
     let tableName;
     if (type === 'people') {
-      tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
+      // Use INNER JOIN when founding year filter is applied for better performance
+      const hasFoundingYearFilter = filters.foundingYear && filters.foundingYear.length > 0;
+      if (hasFoundingYearFilter) {
+        tableName = 'peopleLeads pl INNER JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
+      } else {
+        tableName = 'peopleLeads pl LEFT JOIN companies c ON pl.company_linkedin_url = c.company_linkedin_url';
+      }
     } else if (type === 'company') {
       tableName = 'companies c';  // Add alias 'c' for companies table
     }
